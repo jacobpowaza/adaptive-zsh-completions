@@ -8,7 +8,7 @@ $ git clone https://github.com/jacobpowaza/r
   jacobpowaza/relay-plugins.git  Relay plugins
 ```
 
-Adaptive discovers what a command accepts, resolves what the current argument means, and ranks useful values from local context. Its best recommendation appears as inline ghost text. Ambiguous filesystem paths appear in a small menu below the prompt.
+Adaptive discovers what a command accepts, resolves what the current argument means, and ranks useful values from local context. Its best recommendation appears as inline ghost text. Tab reveals the other relevant values in a compact, shell-style list.
 
 > [!NOTE]
 > v0.1 ships a complete Zsh frontend. The protocol and core are shell-independent; Bash and Fish frontends are planned.
@@ -88,11 +88,11 @@ Claude, Codex, and other installed CLIs are not encoded as special cases. Adapti
 
 ## Zsh controls
 
-- Tab accepts ghost text or the selected menu candidate. Set `ADAPTIVE_ACCEPT_KEY` before initialization to change it.
-- The highest-ranked command, flag, branch, script, or repository recommendation stays inline in dark gray—even when alternatives exist.
-- Ambiguous files and directories use the compact menu. Set `ADAPTIVE_GHOST_STYLE` to any ZLE highlight style before initialization to change the inline color.
-- Right arrow cycles a visible candidate menu; Up/Down work too. Set `ADAPTIVE_MENU_NEXT_KEY` to change it.
-- Press 1–9 to accept that numbered menu item immediately. Escape dismisses the menu.
+- The highest-ranked command, flag, branch, directory, script, or repository recommendation stays inline in dark gray.
+- Tab reveals related commands, flags, or current-directory entries without immediately replacing a partial token. On an exact token such as `git clone`, it advances to the next argument while keeping the sibling-command list visible.
+- Repository candidates appear automatically after a recognized forge owner path such as `https://github.com/example/`.
+- A second Tab accepts the highest-ranked visible candidate. Right arrow cycles visible candidates; Up/Down work too. Set `ADAPTIVE_ACCEPT_KEY` or `ADAPTIVE_MENU_NEXT_KEY` before initialization to change those keys.
+- Set `ADAPTIVE_GHOST_STYLE` to any ZLE highlight style before initialization to change the inline color.
 - Enter runs the command by default. Set `ADAPTIVE_ENTER_ACCEPTS_MENU=1` to make Enter accept an open menu.
 - Outside an Adaptive suggestion/menu, the widgets delegate to normal ZLE behavior. `bindkey -e` is supported.
 
@@ -101,6 +101,7 @@ Claude, Codex, and other installed CLIs are not encoded as special cases. Adapti
 ```text
 adaptive init zsh
 adaptive doctor
+adaptive query --buffer 'git clone' --list
 adaptive discover git
 adaptive discover docker compose
 adaptive inspect git
@@ -114,7 +115,7 @@ adaptive history disable
 adaptive version
 ```
 
-`adaptive query` is the stable frontend protocol. It emits JSON by default and a sanitized tab-separated stream for the Zsh integration.
+`adaptive query` is the stable frontend protocol. It emits JSON by default and a sanitized tab-separated stream for the Zsh integration. The additive `--list` flag keeps related alternatives for an explicit Tab listing while ordinary queries remain prefix-focused.
 
 ## Architecture
 
@@ -124,7 +125,7 @@ shell buffer
                                      \-> history fallback
                 candidates -> normalizer/ranker -> shell protocol
                                                    |- ghost text
-                                                   `- small menu
+                                                   `- candidate list
 ```
 
 Discovery only invokes bounded informational interfaces: known native completion endpoints, `--help`, `help`, and lazily reached subcommand help. Schemas are cached against an executable path/size/mtime fingerprint. Official documentation retrieval is optional, allowlisted by command, size-limited, treated as untrusted data, and never evaluated.

@@ -33,6 +33,7 @@ pub enum Source {
     LocalHelp,
     OfficialDocs,
     Filesystem,
+    Command,
     History,
 }
 
@@ -44,6 +45,7 @@ impl Source {
             Self::OfficialDocs => 0.91,
             Self::LocalHelp => 0.88,
             Self::Filesystem => 0.90,
+            Self::Command => 0.75,
             Self::History => 0.55,
         }
     }

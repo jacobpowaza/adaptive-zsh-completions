@@ -88,7 +88,7 @@ impl Provider for ForgeProvider {
     fn matches(&self, context: &ProviderContext<'_>) -> bool {
         context.forge_enabled
             && context.query.command.as_deref() == Some("git")
-            && context.query.args.first().is_some_and(|arg| arg == "clone")
+            && context.query.args.as_slice() == ["clone"]
     }
 
     fn complete(&self, context: &ProviderContext<'_>) -> Result<Vec<Candidate>> {

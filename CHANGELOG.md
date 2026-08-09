@@ -7,7 +7,9 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 ### Changed
 
 - Show the highest-ranked command, flag, branch, script, or repository candidate as an inline recommendation even when alternatives exist.
-- Reserve the compact candidate menu for ambiguous filesystem paths.
+- Show Tab alternatives as an unnumbered shell-style list while keeping the highest-ranked candidate inline.
+- Rank blank `cd` suggestions from current-directory entries and learned local usage.
+- Add an opt-in `adaptive query --list` protocol mode without changing ordinary query responses.
 - Match the previous local autosuggestion appearance with a darker `fg=245` default.
 
 ## [0.1.1] - 2026-08-09

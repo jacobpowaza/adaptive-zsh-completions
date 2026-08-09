@@ -5,10 +5,47 @@ use std::{
 };
 
 pub fn rank(
+    candidates: Vec<Candidate>,
+    prefix: &str,
+    usage: &HashMap<String, Usage>,
+    fuzzy: bool,
+) -> Vec<Candidate> {
+    rank_inner(candidates, prefix, usage, fuzzy, false)
+}
+
+pub fn rank_for_list(
     mut candidates: Vec<Candidate>,
     prefix: &str,
     usage: &HashMap<String, Usage>,
     fuzzy: bool,
+) -> Vec<Candidate> {
+    let p = prefix.to_ascii_lowercase();
+    let group_prefix = if p.starts_with('-') {
+        p.clone()
+    } else {
+        p.chars().next().map(String::from).unwrap_or_default()
+    };
+    if !group_prefix.is_empty() {
+        candidates.retain(|candidate| {
+            candidate
+                .value
+                .to_ascii_lowercase()
+                .starts_with(&group_prefix)
+                || candidate
+                    .display
+                    .to_ascii_lowercase()
+                    .starts_with(&group_prefix)
+        });
+    }
+    rank_inner(candidates, prefix, usage, fuzzy, true)
+}
+
+fn rank_inner(
+    mut candidates: Vec<Candidate>,
+    prefix: &str,
+    usage: &HashMap<String, Usage>,
+    fuzzy: bool,
+    include_alternatives: bool,
 ) -> Vec<Candidate> {
     let p = prefix.to_ascii_lowercase();
     let has_prefix_match = !p.is_empty()
@@ -33,11 +70,13 @@ pub fn rank(
         } else if fuzzy {
             let sim = strsim::jaro_winkler(&v, &p).max(strsim::jaro_winkler(&d, &p));
             if sim < 0.55 {
-                score -= 100.0
+                if !include_alternatives {
+                    score -= 100.0
+                }
             } else {
                 score += sim * 18.0
             }
-        } else {
+        } else if !include_alternatives {
             score -= 100.0
         }
         if let Some(u) = usage.get(&c.value) {
@@ -48,7 +87,7 @@ pub fn rank(
         c.score = score;
     }
     candidates.retain(|c| c.score > 0.0);
-    if has_prefix_match {
+    if has_prefix_match && !include_alternatives {
         candidates.retain(|candidate| {
             candidate.value.to_ascii_lowercase().starts_with(&p)
                 || candidate.display.to_ascii_lowercase().starts_with(&p)

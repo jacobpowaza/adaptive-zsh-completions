@@ -22,9 +22,7 @@ pub struct CompletionConfig {
 #[serde(default)]
 pub struct UiConfig {
     pub ghost_text: bool,
-    pub menu: bool,
     pub max_candidates: usize,
-    pub enter_accepts_menu: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -56,9 +54,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             ghost_text: true,
-            menu: true,
             max_candidates: 8,
-            enter_accepts_menu: false,
         }
     }
 }

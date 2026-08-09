@@ -23,4 +23,4 @@ Schemas are stored in an engine-versioned namespace, keyed by command/path, and 
 
 ## Frontend boundary
 
-`adaptive query --buffer ... --cursor ... --cwd ...` is the portable boundary for future Bash/Fish integrations. Frontends own keybindings and rendering; they do not need to understand discovery, providers, cache, or ranking.
+`adaptive query --buffer ... --cursor ... --cwd ...` is the portable boundary for future Bash/Fish integrations. Frontends may add `--list` for an explicit alternatives listing; without it, the existing prefix-focused response is unchanged. Frontends own keybindings and rendering; they do not need to understand discovery, providers, cache, or ranking.

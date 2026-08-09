@@ -65,6 +65,8 @@ struct QueryArgs {
     cwd: Option<PathBuf>,
     #[arg(long)]
     offline: bool,
+    #[arg(long)]
+    list: bool,
     #[arg(long, value_enum, default_value = "json")]
     format: OutputFormat,
 }
@@ -105,12 +107,7 @@ fn run() -> Result<()> {
     match cli.command {
         Command::Init { shell: Shell::Zsh } => {
             let config = Config::load()?;
-            println!(
-                ": ${{ADAPTIVE_GHOST_TEXT:={}}}\n: ${{ADAPTIVE_MENU:={}}}\n: ${{ADAPTIVE_ENTER_ACCEPTS_MENU:={}}}",
-                u8::from(config.ui.ghost_text),
-                u8::from(config.ui.menu),
-                u8::from(config.ui.enter_accepts_menu)
-            );
+            println!(": ${{ADAPTIVE_GHOST_TEXT:={}}}", u8::from(config.ui.ghost_text));
             print!("{}", include_str!("../shell/adaptive.zsh"));
         }
         Command::Init { shell } => {
@@ -131,7 +128,11 @@ fn run() -> Result<()> {
                 .char_indices()
                 .nth(cursor_chars)
                 .map_or(q.buffer.len(), |(index, _)| index);
-            let response = engine.query(&q.buffer, cursor_bytes, &cwd, q.offline)?;
+            let response = if q.list {
+                engine.list(&q.buffer, cursor_bytes, &cwd, q.offline)?
+            } else {
+                engine.query(&q.buffer, cursor_bytes, &cwd, q.offline)?
+            };
             match q.format {
                 OutputFormat::Json => println!("{}", serde_json::to_string(&response)?),
                 OutputFormat::Zsh => print_zsh(&response),

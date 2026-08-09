@@ -35,7 +35,7 @@ export ADAPTIVE_MENU_NEXT_KEY='^[[C'
 export ADAPTIVE_ENTER_ACCEPTS_MENU=1
 ```
 
-Adaptive renders the highest-ranked non-filesystem recommendation inline. The compact menu is reserved for multiple filesystem candidates.
+Adaptive renders the highest-ranked recommendation inline. Tab shows an unnumbered, shell-style list of related commands, flags, or filesystem entries; recognized forge repository lists can appear automatically.
 
 The installer also accepts `ADAPTIVE_ACCEPT_KEY`, `ADAPTIVE_MENU_NEXT_KEY`, and `ADAPTIVE_GHOST_STYLE` and writes their quoted values into its managed block.
 

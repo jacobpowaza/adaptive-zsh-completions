@@ -22,7 +22,9 @@ impl Provider for FilesystemProvider {
         } else {
             c.cwd.join(raw)
         };
-        let (dir, prefix) = if raw.ends_with('/') {
+        let (dir, prefix) = if raw.is_empty() {
+            (c.cwd.to_path_buf(), String::new())
+        } else if raw.ends_with('/') {
             (expanded, String::new())
         } else {
             (

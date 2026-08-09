@@ -43,6 +43,17 @@ impl<'a> Discoverer<'a> {
         )
         .unwrap_or_default();
         let mut schema = parse_help(command, path, &text);
+        if command == "git"
+            && path.is_empty()
+            && let Ok(text) = run_informational(
+                executable.to_string_lossy().as_ref(),
+                ["help", "-a"],
+                None,
+                Duration::from_secs(2),
+            )
+        {
+            merge(&mut schema, parse_git_main_commands(&text));
+        }
         if schema.items.is_empty() {
             let mut short = path.to_vec();
             short.push("-h".into());
@@ -102,7 +113,7 @@ impl<'a> Discoverer<'a> {
 }
 
 pub fn schema_namespace() -> String {
-    format!("schemas-{}", crate::VERSION)
+    format!("schemas-{}-3", crate::VERSION)
 }
 
 fn merge(local: &mut CommandSchema, official: CommandSchema) {
@@ -116,6 +127,26 @@ fn merge(local: &mut CommandSchema, official: CommandSchema) {
         }
     }
     local.confidence = local.confidence.max(official.confidence);
+}
+
+fn parse_git_main_commands(text: &str) -> CommandSchema {
+    let mut section = String::from("Commands:\n");
+    let mut in_main = false;
+    for line in text.lines() {
+        if line.trim() == "Main Porcelain Commands" {
+            in_main = true;
+            continue;
+        }
+        if !in_main {
+            continue;
+        }
+        if !line.is_empty() && line.trim_start().len() == line.len() {
+            break;
+        }
+        section.push_str(line);
+        section.push('\n');
+    }
+    parse_help("git", &[], &section)
 }
 
 pub fn child_path(schema: &CommandSchema, args: &[String]) -> Vec<String> {

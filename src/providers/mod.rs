@@ -1,3 +1,4 @@
+mod command;
 mod docker;
 mod filesystem;
 mod forge;
@@ -28,6 +29,7 @@ pub trait Provider {
 
 pub fn candidates(ctx: &ProviderContext<'_>) -> Vec<Candidate> {
     let providers: Vec<Box<dyn Provider>> = vec![
+        Box::new(command::PathCommandProvider),
         Box::new(forge::ForgeProvider),
         Box::new(git::GitProvider),
         Box::new(npm::NpmProvider),
