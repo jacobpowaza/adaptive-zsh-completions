@@ -1,0 +1,25 @@
+name: Feature request
+description: Propose discovery, provider, or shell UX improvements
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Completion context
+      description: What argument meaning or generic help shape should Adaptive understand?
+    validations:
+      required: true
+  - type: dropdown
+    id: type
+    attributes:
+      label: Best fit
+      options: [Generic discovery, Dynamic provider, Ranking, Zsh frontend, Bash/Fish frontend, Documentation]
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: Safe data source
+      description: Which local or official source can provide this data?
+

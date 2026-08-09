@@ -1,0 +1,29 @@
+name: Bug report
+description: Report reproducible completion behavior
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never include tokens, private repository names, or raw unsanitized history.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include the sanitized buffer and expected candidates.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: adaptive doctor
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+    validations:
+      required: true
+
