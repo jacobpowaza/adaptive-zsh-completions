@@ -196,7 +196,19 @@ impl Engine {
                 .get(&candidates[0].value)
                 .is_some_and(|u| u.count >= 3)
                 && candidates[0].score - candidates[1].score >= 15.0;
-            if habitual {
+            // With no history yet, the same collapse applies when the
+            // top-ranked candidate is the well-known default for this tool
+            // (e.g. "clone" for git, "install" for brew) -- personal usage
+            // still wins first: if the user's habits reranked something
+            // else to the top, it won't match the hardcoded default here
+            // and this falls through to the normal multi-candidate wait.
+            let common_default = context
+                .command
+                .as_deref()
+                .and_then(|cmd| COMMON_SUBCOMMANDS.iter().find(|(c, _)| *c == cmd))
+                .and_then(|(_, subs)| subs.first())
+                .is_some_and(|first| *first == candidates[0].value);
+            if habitual || common_default {
                 candidates.truncate(1);
             }
         }
