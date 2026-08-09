@@ -8,6 +8,8 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
         Regex::new(r"^\s{2,}([a-zA-Z0-9][a-zA-Z0-9_-]*(?:,\s*[a-zA-Z0-9_-]+)*)\s{2,}(.+)$")
             .unwrap();
     let usage_re = Regex::new(r"(?i)^\s*usage:\s*(.+)$").unwrap();
+    let inline_flag =
+        Regex::new(r"(?:^|[\s\[|,])(-[A-Za-z0-9?]|--[A-Za-z0-9][A-Za-z0-9_-]*)").unwrap();
     let mut section = "";
     let mut items = Vec::new();
     let mut usage = None;
@@ -22,7 +24,8 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
         if matches!(
             heading.as_str(),
             "commands" | "subcommands" | "available commands"
-        ) {
+        ) || (heading.contains("commands") && heading.len() < 100)
+        {
             section = "commands";
             continue;
         }
@@ -88,6 +91,18 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
                 values: vec![],
                 description: c[2].trim().to_owned(),
             });
+        }
+        for capture in inline_flag.captures_iter(&line) {
+            let name = capture[1].to_owned();
+            if !items.iter().any(|item| item.names.contains(&name)) {
+                items.push(SchemaItem {
+                    names: vec![name],
+                    kind: ItemKind::Flag,
+                    value_hint: None,
+                    values: vec![],
+                    description: String::new(),
+                });
+            }
         }
     }
     items.sort_by(|a, b| a.names.cmp(&b.names));

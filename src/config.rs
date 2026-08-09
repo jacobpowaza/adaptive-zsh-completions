@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub completion: CompletionConfig,
@@ -26,7 +26,7 @@ pub struct UiConfig {
     pub max_candidates: usize,
     pub enter_accepts_menu: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ProvidersConfig {
     pub github: ProviderToggle,
@@ -37,22 +37,12 @@ pub struct ProvidersConfig {
 pub struct ProviderToggle {
     pub enabled: bool,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct PrivacyConfig {
     pub telemetry: bool,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            completion: CompletionConfig::default(),
-            ui: UiConfig::default(),
-            providers: ProvidersConfig::default(),
-            privacy: PrivacyConfig::default(),
-        }
-    }
-}
 impl Default for CompletionConfig {
     fn default() -> Self {
         Self {
@@ -72,22 +62,9 @@ impl Default for UiConfig {
         }
     }
 }
-impl Default for ProvidersConfig {
-    fn default() -> Self {
-        Self {
-            github: ProviderToggle::default(),
-            docker: ProviderToggle::default(),
-        }
-    }
-}
 impl Default for ProviderToggle {
     fn default() -> Self {
         Self { enabled: true }
-    }
-}
-impl Default for PrivacyConfig {
-    fn default() -> Self {
-        Self { telemetry: false }
     }
 }
 

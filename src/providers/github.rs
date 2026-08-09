@@ -25,10 +25,8 @@ pub struct GithubInput {
 pub fn parse_github_input(value: &str) -> Option<GithubInput> {
     let (style, rest) = if let Some(v) = value.strip_prefix("https://github.com/") {
         (GithubStyle::Https, v)
-    } else if let Some(v) = value.strip_prefix("git@github.com:") {
-        (GithubStyle::Ssh, v)
     } else {
-        return None;
+        (GithubStyle::Ssh, value.strip_prefix("git@github.com:")?)
     };
     let mut p = rest.splitn(2, '/');
     let owner = p.next()?.trim();
