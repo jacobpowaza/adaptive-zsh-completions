@@ -29,7 +29,7 @@ pub struct UiConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ProvidersConfig {
-    pub github: ProviderToggle,
+    pub forge: ProviderToggle,
     pub docker: ProviderToggle,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,5 +108,6 @@ mod tests {
     #[test]
     fn telemetry_defaults_off() {
         assert!(!Config::default().privacy.telemetry);
+        assert!(Config::default().providers.forge.enabled);
     }
 }

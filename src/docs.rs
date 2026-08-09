@@ -26,7 +26,6 @@ impl TrustedDocs<'_> {
             "docker" => Some("https://docs.docker.com/reference/cli/docker/".into()),
             "kubectl" => Some("https://kubernetes.io/docs/reference/kubectl/generated/".into()),
             "npm" => Some("https://docs.npmjs.com/cli/using-npm/config".into()),
-            "claude" => Some("https://docs.anthropic.com/en/docs/claude-code/cli-reference".into()),
             _ => None,
         }
     }
@@ -107,5 +106,6 @@ mod tests {
                 .starts_with("https://git-scm.com/")
         );
         assert!(TrustedDocs::url_for("mystery", &[]).is_none());
+        assert!(TrustedDocs::url_for("unmapped-cli", &[]).is_none());
     }
 }

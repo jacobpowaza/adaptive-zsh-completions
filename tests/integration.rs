@@ -230,19 +230,58 @@ fn github_provider_uses_mock_http_then_works_offline_from_cache() {
 }
 
 #[test]
+fn gitlab_forge_provider_uses_the_shared_protocol() {
+    let temp = isolated();
+    let server = Server::http("127.0.0.1:0").unwrap();
+    let address = format!("http://{}", server.server_addr());
+    let handle = thread::spawn(move || {
+        let request = server
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert!(request.url().starts_with("/users/example/projects"));
+        let body = r#"[{"path":"runner","description":"CI runner"},{"path":"website","description":null}]"#;
+        request
+            .respond(
+                Response::from_string(body)
+                    .with_header(Header::from_bytes("Content-Type", "application/json").unwrap()),
+            )
+            .unwrap();
+    });
+    let output = cargo_bin_cmd!("adaptive")
+        .args([
+            "query",
+            "--buffer",
+            "git clone https://gitlab.com/example/r",
+        ])
+        .env("ADAPTIVE_GITLAB_API", address)
+        .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
+        .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
+        .env("ADAPTIVE_CONFIG", temp.path().join("config.toml"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let body: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        body["candidates"][0]["value"],
+        "https://gitlab.com/example/runner.git"
+    );
+    handle.join().unwrap();
+}
+
+#[test]
 fn zsh_frontend_loads_without_overwriting_unrelated_emacs_bindings() {
     let binary = assert_cmd::cargo::cargo_bin!("adaptive");
     let script = format!(
         r#"bindkey -e
 before=$(bindkey '^A')
-before_tab=$(bindkey '^I')
 before_enter=$(bindkey '^M')
 eval "$({} init zsh)"
 after=$(bindkey '^A')
 [[ "$before" = "$after" ]]
-[[ "$before_tab" = "$(bindkey '^I')" ]]
+bindkey '^I' | grep -q adaptive-menu-tab
 [[ "$before_enter" = "$(bindkey '^M')" ]]
-zle -l | grep -E 'adaptive-forward-char|adaptive-menu-tab|adaptive-menu-enter'
+zle -l | grep -E 'adaptive-menu-right|adaptive-menu-tab|adaptive-menu-number'
 "#,
         binary.display()
     );
@@ -256,7 +295,7 @@ zle -l | grep -E 'adaptive-forward-char|adaptive-menu-tab|adaptive-menu-enter'
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("adaptive-forward-char"));
+    assert!(stdout.contains("adaptive-menu-right"));
     assert!(stdout.contains("adaptive-menu-tab"));
 }
 

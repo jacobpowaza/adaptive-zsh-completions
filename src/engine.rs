@@ -37,7 +37,7 @@ impl Engine {
             query: &context,
             cwd,
             cache: &self.cache,
-            github_enabled: self.config.providers.github.enabled,
+            forge_enabled: self.config.providers.forge.enabled,
             docker_enabled: self.config.providers.docker.enabled,
             offline,
         });

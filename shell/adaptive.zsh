@@ -3,6 +3,8 @@
 : ${ADAPTIVE_GHOST_TEXT:=1}
 : ${ADAPTIVE_MENU:=1}
 : ${ADAPTIVE_ENTER_ACCEPTS_MENU:=0}
+: ${ADAPTIVE_ACCEPT_KEY:=^I}
+: ${ADAPTIVE_MENU_NEXT_KEY:=^[[C}
 typeset -g ADAPTIVE_QUERY_FD="" ADAPTIVE_QUERY_PID="" ADAPTIVE_PREFIX_LEN=0 ADAPTIVE_MENU_INDEX=1
 typeset -ga ADAPTIVE_VALUES ADAPTIVE_LABELS ADAPTIVE_DESCRIPTIONS
 
@@ -18,13 +20,15 @@ _adaptive_clear() {
     wait "$ADAPTIVE_QUERY_PID" 2>/dev/null
   fi
   ADAPTIVE_QUERY_PID=""
+  ADAPTIVE_VALUES=(); ADAPTIVE_LABELS=(); ADAPTIVE_DESCRIPTIONS=()
+  zle -M "" 2>/dev/null
   zle -K main 2>/dev/null
 }
 _adaptive_render_menu() {
   local -a lines; local i marker
   for ((i=1; i<=${#ADAPTIVE_VALUES}; i++)); do
     marker="  "; (( i == ADAPTIVE_MENU_INDEX )) && marker="› "
-    lines+=("${marker}${ADAPTIVE_LABELS[i]}  ${ADAPTIVE_DESCRIPTIONS[i]}")
+    lines+=("${marker}[${i}] ${ADAPTIVE_LABELS[i]}  ${ADAPTIVE_DESCRIPTIONS[i]}")
   done
   zle -M "${(F)lines}"
 }
@@ -60,22 +64,25 @@ _adaptive_accept_selected() {
   (( keep > 0 )) && LBUFFER="${LBUFFER[1,$keep]}" || LBUFFER=""
   LBUFFER+="${ADAPTIVE_VALUES[ADAPTIVE_MENU_INDEX]}"; _adaptive_clear; ADAPTIVE_VALUES=(); zle -M ""; zle -R
 }
-adaptive-forward-char() { if [[ -n "$POSTDISPLAY" ]]; then LBUFFER+="$POSTDISPLAY"; POSTDISPLAY=""; zle -R; else zle .forward-char; fi }
 adaptive-menu-tab() { if ! _adaptive_accept_selected; then zle .expand-or-complete; fi }
 adaptive-menu-up() { if (( ${#ADAPTIVE_VALUES} > 1 )); then (( ADAPTIVE_MENU_INDEX-- )); (( ADAPTIVE_MENU_INDEX < 1 )) && ADAPTIVE_MENU_INDEX=${#ADAPTIVE_VALUES}; _adaptive_render_menu; else zle .up-line-or-history; fi }
 adaptive-menu-down() { if (( ${#ADAPTIVE_VALUES} > 1 )); then (( ADAPTIVE_MENU_INDEX++ )); (( ADAPTIVE_MENU_INDEX > ${#ADAPTIVE_VALUES} )) && ADAPTIVE_MENU_INDEX=1; _adaptive_render_menu; else zle .down-line-or-history; fi }
+adaptive-menu-right() { if (( ${#ADAPTIVE_VALUES} > 1 )); then adaptive-menu-down; else zle .forward-char; fi }
+adaptive-menu-number() { local index=$KEYS; if (( index >= 1 && index <= ${#ADAPTIVE_VALUES} )); then ADAPTIVE_MENU_INDEX=$index; _adaptive_accept_selected; else zle .self-insert; fi }
 adaptive-menu-enter() { if [[ "${ADAPTIVE_ENTER_ACCEPTS_MENU:-0}" == 1 ]] && (( ${#ADAPTIVE_VALUES} > 1 )); then _adaptive_accept_selected; else _adaptive_clear; ADAPTIVE_VALUES=(); zle -M ""; zle .accept-line; fi }
 adaptive-menu-escape() { _adaptive_clear; ADAPTIVE_VALUES=(); zle -M ""; zle -R }
 _adaptive_history_hook() { adaptive history record -- "${1%$'\n'}" >/dev/null 2>&1 &!; return 0 }
 zle -N self-insert adaptive-self-insert
 zle -N backward-delete-char adaptive-backward-delete-char
-zle -N adaptive-forward-char adaptive-forward-char
 zle -N adaptive-menu-tab adaptive-menu-tab
 zle -N adaptive-menu-up adaptive-menu-up
 zle -N adaptive-menu-down adaptive-menu-down
+zle -N adaptive-menu-right adaptive-menu-right
+zle -N adaptive-menu-number adaptive-menu-number
 zle -N adaptive-menu-enter adaptive-menu-enter
 zle -N adaptive-menu-escape adaptive-menu-escape
-bindkey "${ADAPTIVE_ACCEPT_KEY:-^[[C}" adaptive-forward-char
+bindkey "$ADAPTIVE_ACCEPT_KEY" adaptive-menu-tab
+bindkey "$ADAPTIVE_MENU_NEXT_KEY" adaptive-menu-right
 bindkey -N adaptive-menu
 bindkey -A main adaptive-menu
 bindkey -M adaptive-menu '^I' adaptive-menu-tab
@@ -83,5 +90,6 @@ bindkey -M adaptive-menu '^[[A' adaptive-menu-up
 bindkey -M adaptive-menu '^[[B' adaptive-menu-down
 bindkey -M adaptive-menu '^M' adaptive-menu-enter
 bindkey -M adaptive-menu '^[' adaptive-menu-escape
+for _adaptive_number in {1..9}; do bindkey -M adaptive-menu "$_adaptive_number" adaptive-menu-number; done
 autoload -Uz add-zsh-hook
 add-zsh-hook zshaddhistory _adaptive_history_hook

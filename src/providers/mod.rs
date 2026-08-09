@@ -1,7 +1,7 @@
 mod docker;
 mod filesystem;
+mod forge;
 mod git;
-mod github;
 mod npm;
 mod ssh;
 
@@ -16,7 +16,7 @@ pub struct ProviderContext<'a> {
     pub query: &'a QueryContext,
     pub cwd: &'a Path,
     pub cache: &'a Cache,
-    pub github_enabled: bool,
+    pub forge_enabled: bool,
     pub docker_enabled: bool,
     pub offline: bool,
 }
@@ -28,7 +28,7 @@ pub trait Provider {
 
 pub fn candidates(ctx: &ProviderContext<'_>) -> Vec<Candidate> {
     let providers: Vec<Box<dyn Provider>> = vec![
-        Box::new(github::GithubProvider),
+        Box::new(forge::ForgeProvider),
         Box::new(git::GitProvider),
         Box::new(npm::NpmProvider),
         Box::new(ssh::SshProvider),
@@ -46,4 +46,4 @@ pub fn candidates(ctx: &ProviderContext<'_>) -> Vec<Candidate> {
     out
 }
 
-pub use github::{GithubInput, parse_github_input};
+pub use forge::{ForgeInput, parse_forge_input};

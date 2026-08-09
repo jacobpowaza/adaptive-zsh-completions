@@ -263,6 +263,7 @@ fn doctor() -> Result<()> {
     );
     println!("Git: {}", available("git"));
     println!("GitHub CLI: {}", available("gh"));
+    println!("Forge providers: github.com, gitlab.com, codeberg.org, gitea.com, bitbucket.org");
     println!("Zsh: {}", available("zsh"));
     println!(
         "Online docs: {}",

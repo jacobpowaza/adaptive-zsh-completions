@@ -26,5 +26,8 @@ For network providers:
 - keep credentials in process memory and never include them in cache keys, errors, or logs;
 - test with a local mock server, including offline reuse and hostile candidate strings.
 
-Add the provider in `providers::candidates`, unit-test parsing, and add an integration test that invokes the public query protocol.
+The built-in forge adapter supports GitHub, GitLab, Codeberg/Forgejo, Gitea.com, and Bitbucket Cloud. Each host has a small response normalizer over the same cache, ranking, timeout, and insertion pipeline; command parsing remains generic.
 
+The adapters follow the official [GitHub REST](https://docs.github.com/en/rest/repos/repos), [GitLab Projects](https://docs.gitlab.com/api/projects/#list-all-personal-projects-for-a-user), [Gitea API](https://docs.gitea.com/api/), and [Bitbucket repositories](https://developer.atlassian.com/cloud/bitbucket/rest/api-group-repositories/) contracts.
+
+Add the provider in `providers::candidates`, unit-test parsing, and add an integration test that invokes the public query protocol.

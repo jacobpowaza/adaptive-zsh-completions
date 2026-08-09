@@ -27,6 +27,12 @@ Restart Zsh, then check the installation:
 adaptive doctor
 ```
 
+To install with a different acceptance key, pass a Zsh `bindkey` sequence to the installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jacobpowaza/adaptive-zsh-completions/main/install.sh | ADAPTIVE_ACCEPT_KEY='^F' sh
+```
+
 For a source checkout:
 
 ```sh
@@ -48,7 +54,7 @@ The uninstaller backs up `.zshrc`, removes only Adaptive's managed block and bin
 - Cobra-style native structured completions when safely detected
 - Files and directories for `cd`, `cat`, `code`, `ls`, and `open`
 - Local Git branches and remotes for `checkout`, `switch`, `push`, and `remote`
-- Public GitHub repositories in HTTPS and SSH clone URL forms
+- Public GitHub, GitLab, Codeberg/Forgejo, Gitea, and Bitbucket repositories in HTTPS and SSH clone URL forms
 - npm, pnpm, and Yarn scripts from the nearest `package.json`
 - SSH aliases from `~/.ssh/config` and non-hashed `known_hosts` entries
 - Docker container names for `exec` and `logs`, when Docker is responsive
@@ -76,11 +82,15 @@ The demo image is intentionally not fabricated; a terminal recording will be add
 
 Static completion repositories encode each CLI as a large shell function. Adaptive stores a generic command schema and keeps command-specific code limited to small adapters for dynamic values that cannot be inferred from help.
 
+Adaptive's parser, ranking, cache, learning, query protocol, and ZLE frontend are implemented in this repository. It does not wrap, source, copy, or depend at runtime on zsh-autosuggestions, Oh My Zsh, or a static completion collection. The Rust crates in `Cargo.lock` provide ordinary low-level facilities such as TLS, serialization, and CLI argument parsing; they are not completion engines.
+
+Claude, Codex, and other installed CLIs are not encoded as special cases. Adaptive discovers their current flags and subcommands from native completion metadata and safe `--help`/`-h`/`help`/man interfaces, then caches the resulting schema against the executable fingerprint.
+
 ## Zsh controls
 
-- Right arrow accepts ghost text. Set `ADAPTIVE_ACCEPT_KEY` before initialization to change it.
-- Up/Down moves through a visible candidate menu, and Tab accepts the selection.
-- Escape dismisses the menu.
+- Tab accepts ghost text or the selected menu candidate. Set `ADAPTIVE_ACCEPT_KEY` before initialization to change it.
+- Right arrow cycles a visible candidate menu; Up/Down work too. Set `ADAPTIVE_MENU_NEXT_KEY` to change it.
+- Press 1–9 to accept that numbered menu item immediately. Escape dismisses the menu.
 - Enter runs the command by default. Set `ADAPTIVE_ENTER_ACCEPTS_MENU=1` to make Enter accept an open menu.
 - Outside an Adaptive suggestion/menu, the widgets delegate to normal ZLE behavior. `bindkey -e` is supported.
 
@@ -141,7 +151,7 @@ menu = true
 max_candidates = 8
 enter_accepts_menu = false
 
-[providers.github]
+[providers.forge]
 enabled = true
 
 [providers.docker]
