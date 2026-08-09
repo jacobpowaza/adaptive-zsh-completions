@@ -10,6 +10,7 @@ test -x "$TEST_ROOT/bin/adaptive"
 test "$(grep -c '^# >>> adaptive initialize >>>$' "$TEST_ROOT/home/.zshrc")" -eq 1
 grep -q 'EXISTING_SETTING=kept' "$TEST_ROOT/home/.zshrc"
 grep -q "ADAPTIVE_ACCEPT_KEY='\^F'" "$TEST_ROOT/home/.zshrc"
+grep -q "ADAPTIVE_GHOST_STYLE='fg=8'" "$TEST_ROOT/home/.zshrc"
 ADAPTIVE_SOURCE_DIR="$ROOT" ADAPTIVE_INSTALL_DIR="$TEST_ROOT/bin" ADAPTIVE_ZSHRC="$TEST_ROOT/home/.zshrc" "$ROOT/install.sh"
 test "$(grep -c '^# >>> adaptive initialize >>>$' "$TEST_ROOT/home/.zshrc")" -eq 1
 ADAPTIVE_INSTALL_DIR="$TEST_ROOT/bin" ADAPTIVE_ZSHRC="$TEST_ROOT/home/.zshrc" "$ROOT/uninstall.sh"

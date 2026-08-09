@@ -7,18 +7,23 @@ ZSHRC=${ADAPTIVE_ZSHRC:-"$HOME/.zshrc"}
 VERSION=${ADAPTIVE_VERSION:-latest}
 ACCEPT_KEY=${ADAPTIVE_ACCEPT_KEY:-'^I'}
 MENU_NEXT_KEY=${ADAPTIVE_MENU_NEXT_KEY:-'^[[C'}
+GHOST_STYLE=${ADAPTIVE_GHOST_STYLE:-'fg=8'}
 
 say() { printf '%s\n' "$*"; }
 fail() { say "adaptive installer: $*" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 [ -n "$ACCEPT_KEY" ] || fail "ADAPTIVE_ACCEPT_KEY cannot be empty"
 [ -n "$MENU_NEXT_KEY" ] || fail "ADAPTIVE_MENU_NEXT_KEY cannot be empty"
+[ -n "$GHOST_STYLE" ] || fail "ADAPTIVE_GHOST_STYLE cannot be empty"
 [ "${#ACCEPT_KEY}" -le 32 ] || fail "ADAPTIVE_ACCEPT_KEY is too long"
 [ "${#MENU_NEXT_KEY}" -le 32 ] || fail "ADAPTIVE_MENU_NEXT_KEY is too long"
+[ "${#GHOST_STYLE}" -le 64 ] || fail "ADAPTIVE_GHOST_STYLE is too long"
 [ "$(printf '%s' "$ACCEPT_KEY" | tr -d '\r\n')" = "$ACCEPT_KEY" ] || fail "ADAPTIVE_ACCEPT_KEY must be one line"
 [ "$(printf '%s' "$MENU_NEXT_KEY" | tr -d '\r\n')" = "$MENU_NEXT_KEY" ] || fail "ADAPTIVE_MENU_NEXT_KEY must be one line"
+[ "$(printf '%s' "$GHOST_STYLE" | tr -d '\r\n')" = "$GHOST_STYLE" ] || fail "ADAPTIVE_GHOST_STYLE must be one line"
 accept_key_escaped=$(printf '%s' "$ACCEPT_KEY" | sed "s/'/'\\\\''/g")
 menu_next_key_escaped=$(printf '%s' "$MENU_NEXT_KEY" | sed "s/'/'\\\\''/g")
+ghost_style_escaped=$(printf '%s' "$GHOST_STYLE" | sed "s/'/'\\\\''/g")
 mkdir -p "$INSTALL_DIR"
 
 install_from_source() {
@@ -80,6 +85,7 @@ if ! grep -q '^# >>> adaptive initialize >>>$' "$ZSHRC"; then
     printf 'export PATH="%s:$PATH"\n' "$INSTALL_DIR"
     printf "export ADAPTIVE_ACCEPT_KEY='%s'\n" "$accept_key_escaped"
     printf "export ADAPTIVE_MENU_NEXT_KEY='%s'\n" "$menu_next_key_escaped"
+    printf "export ADAPTIVE_GHOST_STYLE='%s'\n" "$ghost_style_escaped"
     printf 'eval "$("%s/adaptive" init zsh)"\n' "$INSTALL_DIR"
     printf '# <<< adaptive initialize <<<\n'
   } >> "$ZSHRC"

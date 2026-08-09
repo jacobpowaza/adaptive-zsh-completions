@@ -41,7 +41,8 @@ impl Engine {
             docker_enabled: self.config.providers.docker.enabled,
             offline,
         });
-        if let Some(command) = context.command.as_deref() {
+        let has_contextual_values = !candidates.is_empty() && !context.current.starts_with('-');
+        if !has_contextual_values && let Some(command) = context.command.as_deref() {
             let discoverer =
                 Discoverer::new(&self.cache, self.config.completion.online_docs && !offline);
             if let Ok(root) = discoverer.discover(command, &[], false) {

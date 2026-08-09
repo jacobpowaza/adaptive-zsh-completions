@@ -93,18 +93,11 @@ impl Provider for ForgeProvider {
 
     fn complete(&self, context: &ProviderContext<'_>) -> Result<Vec<Candidate>> {
         if context.query.current.is_empty() {
-            return Ok(
-                ["github.com", "gitlab.com", "codeberg.org", "bitbucket.org"]
-                    .into_iter()
-                    .map(|host| {
-                        Candidate::new(
-                            format!("https://{host}/"),
-                            "repository forge",
-                            Source::Dynamic,
-                        )
-                    })
-                    .collect(),
-            );
+            return Ok(vec![Candidate::new(
+                "https://github.com/",
+                "repository forge",
+                Source::Dynamic,
+            )]);
         }
         let Some(input) = parse_forge_input(&context.query.current) else {
             return Ok(Vec::new());

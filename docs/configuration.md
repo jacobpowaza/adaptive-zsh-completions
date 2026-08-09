@@ -30,10 +30,11 @@ Zsh-specific environment settings must be assigned before the managed initializa
 
 ```zsh
 export ADAPTIVE_ACCEPT_KEY='^[f'
+export ADAPTIVE_GHOST_STYLE='fg=245'
 export ADAPTIVE_MENU_NEXT_KEY='^[[C'
 export ADAPTIVE_ENTER_ACCEPTS_MENU=1
 ```
 
-The installer also accepts `ADAPTIVE_ACCEPT_KEY` and `ADAPTIVE_MENU_NEXT_KEY` and writes their quoted values into its managed block.
+The installer also accepts `ADAPTIVE_ACCEPT_KEY`, `ADAPTIVE_MENU_NEXT_KEY`, and `ADAPTIVE_GHOST_STYLE` and writes their quoted values into its managed block.
 
 Cache defaults to the platform cache directory and history defaults to the platform local-data directory. `ADAPTIVE_CACHE_DIR` and `ADAPTIVE_DATA_DIR` are available for controlled test environments.

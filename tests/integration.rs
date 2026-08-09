@@ -56,7 +56,11 @@ fn generic_help_and_lazy_subcommand_discovery() {
     assert!(output.status.success());
     let body: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(body["candidates"][0]["value"], "--dangerously-fast");
-    assert!(temp.path().join("cache/schemas-0.1.0").is_dir());
+    assert!(
+        temp.path()
+            .join(format!("cache/schemas-{}", env!("CARGO_PKG_VERSION")))
+            .is_dir()
+    );
 }
 
 #[test]
@@ -282,6 +286,11 @@ after=$(bindkey '^A')
 bindkey '^I' | grep -q adaptive-menu-tab
 [[ "$before_enter" = "$(bindkey '^M')" ]]
 zle -l | grep -E 'adaptive-menu-right|adaptive-menu-tab|adaptive-menu-number'
+BUFFER='git clone '
+CURSOR=$#BUFFER
+_adaptive_set_ghost 'https://github.com/'
+[[ "$POSTDISPLAY" = 'https://github.com/' ]]
+[[ "${{region_highlight[-1]}}" = *'fg=8' ]]
 "#,
         binary.display()
     );
@@ -297,6 +306,16 @@ zle -l | grep -E 'adaptive-menu-right|adaptive-menu-tab|adaptive-menu-number'
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("adaptive-menu-right"));
     assert!(stdout.contains("adaptive-menu-tab"));
+}
+
+#[test]
+fn blank_git_clone_has_one_inline_github_suggestion() {
+    let temp = isolated();
+    let response = query(&temp, "git clone ", temp.path());
+    let candidates = response["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0]["value"], "https://github.com/");
+    assert_eq!(candidates[0]["source"], "dynamic");
 }
 
 #[test]

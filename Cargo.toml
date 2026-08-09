@@ -1,6 +1,6 @@
 [package]
 name = "adaptive-completion"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Context-aware shell completion engine"
@@ -37,4 +37,3 @@ tiny_http = "0.12"
 strip = true
 lto = "thin"
 codegen-units = 1
-

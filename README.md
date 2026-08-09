@@ -89,6 +89,7 @@ Claude, Codex, and other installed CLIs are not encoded as special cases. Adapti
 ## Zsh controls
 
 - Tab accepts ghost text or the selected menu candidate. Set `ADAPTIVE_ACCEPT_KEY` before initialization to change it.
+- Ghost text is rendered inline in dim gray by default. Set `ADAPTIVE_GHOST_STYLE` to any ZLE highlight style (for example, `fg=245`) before initialization to change it.
 - Right arrow cycles a visible candidate menu; Up/Down work too. Set `ADAPTIVE_MENU_NEXT_KEY` to change it.
 - Press 1–9 to accept that numbered menu item immediately. Escape dismisses the menu.
 - Enter runs the command by default. Set `ADAPTIVE_ENTER_ACCEPTS_MENU=1` to make Enter accept an open menu.
