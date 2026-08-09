@@ -1,0 +1,14 @@
+/target/
+/.idea/
+/.vscode/
+*.swp
+*.swo
+.DS_Store
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+coverage/
+dist/
+

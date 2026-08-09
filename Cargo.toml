@@ -1,0 +1,40 @@
+[package]
+name = "adaptive-completion"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Context-aware shell completion engine"
+license = "MIT"
+repository = "https://github.com/jacobpowaza/adaptive-zsh-completions"
+keywords = ["shell", "completion", "zsh", "cli"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "adaptive"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+dirs = "6.0"
+regex = "1.11"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+shell-words = "1.1"
+strsim = "0.11"
+toml = "0.9"
+wait-timeout = "0.2"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.20"
+tiny_http = "0.12"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+
