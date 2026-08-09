@@ -1,6 +1,6 @@
 # Configuration
 
-Adaptive reads `$XDG_CONFIG_HOME/adaptive/config.toml`, or `~/.config/adaptive/config.toml` when XDG is unset. `ADAPTIVE_CONFIG` overrides the path for testing.
+Adaptive uses `$XDG_CONFIG_HOME/adaptive/config.toml` (normally `~/.config/adaptive/config.toml`) on Linux and `~/Library/Application Support/adaptive/config.toml` on macOS. `ADAPTIVE_CONFIG` overrides the path for testing.
 
 ```toml
 [completion]

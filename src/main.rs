@@ -1,6 +1,11 @@
 use adaptive_completion::{
-    VERSION, cache::Cache, config::Config, discovery::Discoverer, engine::Engine,
-    history::HistoryDb, model::QueryResponse,
+    VERSION,
+    cache::Cache,
+    config::Config,
+    discovery::{Discoverer, schema_namespace},
+    engine::Engine,
+    history::HistoryDb,
+    model::QueryResponse,
 };
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -98,7 +103,16 @@ fn main() -> ExitCode {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Init { shell: Shell::Zsh } => print!("{}", include_str!("../shell/adaptive.zsh")),
+        Command::Init { shell: Shell::Zsh } => {
+            let config = Config::load()?;
+            println!(
+                ": ${{ADAPTIVE_GHOST_TEXT:={}}}\n: ${{ADAPTIVE_MENU:={}}}\n: ${{ADAPTIVE_ENTER_ACCEPTS_MENU:={}}}",
+                u8::from(config.ui.ghost_text),
+                u8::from(config.ui.menu),
+                u8::from(config.ui.enter_accepts_menu)
+            );
+            print!("{}", include_str!("../shell/adaptive.zsh"));
+        }
         Command::Init { shell } => {
             let name = match shell {
                 Shell::Bash => "Bash",
@@ -111,12 +125,13 @@ fn run() -> Result<()> {
             let config = Config::load()?;
             let engine = Engine::new(Cache::new(), config);
             let cwd = q.cwd.unwrap_or(env::current_dir()?);
-            let response = engine.query(
-                &q.buffer,
-                q.cursor.unwrap_or(q.buffer.len()),
-                &cwd,
-                q.offline,
-            )?;
+            let cursor_chars = q.cursor.unwrap_or_else(|| q.buffer.chars().count());
+            let cursor_bytes = q
+                .buffer
+                .char_indices()
+                .nth(cursor_chars)
+                .map_or(q.buffer.len(), |(index, _)| index);
+            let response = engine.query(&q.buffer, cursor_bytes, &cwd, q.offline)?;
             match q.format {
                 OutputFormat::Json => println!("{}", serde_json::to_string(&response)?),
                 OutputFormat::Zsh => print_zsh(&response),
@@ -137,7 +152,7 @@ fn run() -> Result<()> {
             let cache = Cache::new();
             let key = format!("{command}:{}", path.join("/"));
             if let Some::<adaptive_completion::model::CommandSchema>(s) =
-                cache.get("schemas", &key)?
+                cache.get(&schema_namespace(), &key)?
             {
                 println!("{}", serde_json::to_string_pretty(&s)?)
             } else {

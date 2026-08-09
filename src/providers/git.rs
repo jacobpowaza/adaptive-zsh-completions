@@ -1,7 +1,7 @@
 use super::{Provider, ProviderContext};
 use crate::{
     model::{Candidate, Source},
-    safety::run_informational,
+    safety::run_successful_informational,
 };
 use anyhow::Result;
 use std::time::Duration;
@@ -40,7 +40,8 @@ impl Provider for GitProvider {
         } else {
             (vec!["remote"], "Git remote")
         };
-        let text = run_informational("git", args, Some(c.cwd), Duration::from_millis(500))?;
+        let text =
+            run_successful_informational("git", args, Some(c.cwd), Duration::from_millis(500))?;
         Ok(text
             .lines()
             .filter(|s| !s.contains(" -> "))

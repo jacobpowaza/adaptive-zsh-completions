@@ -1,13 +1,14 @@
 use crate::{
     cache::Cache,
     config::Config,
-    discovery::{Discoverer, child_path},
+    discovery::Discoverer,
     history::HistoryDb,
     model::{Candidate, ItemKind, QueryResponse, Source},
     native::native_candidates,
     parser::parse_context,
     providers::{self, ProviderContext},
     ranking::rank,
+    safety::sanitize_remote,
 };
 use anyhow::Result;
 use std::{
@@ -47,12 +48,27 @@ impl Engine {
                 let mut native_args = context.args.clone();
                 native_args.push(context.current.clone());
                 candidates.extend(native_candidates(&root, command, &native_args, cwd));
-                let path = child_path(&root, &context.args);
-                let schema = if path.is_empty() {
-                    root
-                } else {
-                    discoverer.discover(command, &path, false).unwrap_or(root)
-                };
+                let mut schema = root;
+                let mut path = Vec::new();
+                for argument in &context.args {
+                    let declares_command_slot = schema
+                        .usage
+                        .as_deref()
+                        .is_some_and(|usage| usage.to_ascii_lowercase().contains("command"))
+                        || schema
+                            .items
+                            .iter()
+                            .any(|item| item.kind == ItemKind::Subcommand);
+                    let is_subcommand = schema.items.iter().any(|item| {
+                        item.kind == ItemKind::Subcommand && item.names.contains(argument)
+                    }) || (declares_command_slot && !argument.starts_with('-'));
+                    if is_subcommand {
+                        path.push(argument.clone());
+                        if let Ok(child) = discoverer.discover(command, &path, false) {
+                            schema = child;
+                        }
+                    }
+                }
                 for item in schema.items {
                     if item.kind == ItemKind::Positional {
                         continue;
@@ -95,6 +111,18 @@ impl Engine {
                 Some((p.strip_prefix(cmd)?.trim_start().to_owned(), u.clone()))
             })
             .collect();
+        candidates.retain_mut(|candidate| {
+            let Some(value) = sanitize_remote(&candidate.value) else {
+                return false;
+            };
+            let Some(display) = sanitize_remote(&candidate.display) else {
+                return false;
+            };
+            candidate.value = value;
+            candidate.display = display;
+            candidate.description = sanitize_remote(&candidate.description).unwrap_or_default();
+            true
+        });
         let mut candidates = rank(
             candidates,
             &context.current,
@@ -104,7 +132,7 @@ impl Engine {
         candidates.truncate(self.config.ui.max_candidates.clamp(1, 50));
         Ok(QueryResponse {
             request_id: now_micros(),
-            prefix_len: context.current.chars().count(),
+            prefix_len: context.raw_current_len,
             candidates,
             cache_only: offline,
         })

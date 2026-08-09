@@ -1,15 +1,11 @@
 use super::{Provider, ProviderContext};
 use crate::{
     model::{Candidate, Source},
-    safety::sanitize_remote,
+    safety::{run_successful_informational, sanitize_remote},
 };
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use std::{
-    env,
-    process::{Command, Stdio},
-    time::Duration,
-};
+use std::{env, io::Read, time::Duration};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GithubStyle {
@@ -142,7 +138,12 @@ fn fetch(owner: &str) -> Result<Vec<Repo>> {
     {
         bail!("GitHub response too large")
     }
-    Ok(response.json()?)
+    let mut bytes = Vec::new();
+    response.take(2 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        bail!("GitHub response too large")
+    }
+    Ok(serde_json::from_slice(&bytes)?)
 }
 fn github_token() -> Option<String> {
     env::var("GH_TOKEN")
@@ -150,16 +151,15 @@ fn github_token() -> Option<String> {
         .ok()
         .filter(|v| !v.is_empty())
         .or_else(|| {
-            let out = Command::new("gh")
-                .args(["auth", "token"])
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output()
-                .ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let t = String::from_utf8(out.stdout).ok()?.trim().to_owned();
+            let t = run_successful_informational(
+                "gh",
+                ["auth", "token"],
+                None,
+                Duration::from_millis(500),
+            )
+            .ok()?
+            .trim()
+            .to_owned();
             (!t.is_empty()).then_some(t)
         })
 }

@@ -11,21 +11,27 @@ pub fn rank(
     fuzzy: bool,
 ) -> Vec<Candidate> {
     let p = prefix.to_ascii_lowercase();
+    let has_prefix_match = !p.is_empty()
+        && candidates.iter().any(|candidate| {
+            candidate.value.to_ascii_lowercase().starts_with(&p)
+                || candidate.display.to_ascii_lowercase().starts_with(&p)
+        });
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     for c in &mut candidates {
         let v = c.value.to_ascii_lowercase();
+        let d = c.display.to_ascii_lowercase();
         let mut score = c.confidence * 100.0;
         if p.is_empty() {
             score += 5.0
-        } else if v == p {
+        } else if v == p || d == p {
             score += 55.0
-        } else if v.starts_with(&p) {
-            score += 40.0 - (v.len().saturating_sub(p.len()) as f64 * 0.02)
+        } else if v.starts_with(&p) || d.starts_with(&p) {
+            score += 40.0 - (v.len().min(d.len()).saturating_sub(p.len()) as f64 * 0.02)
         } else if fuzzy {
-            let sim = strsim::jaro_winkler(&v, &p);
+            let sim = strsim::jaro_winkler(&v, &p).max(strsim::jaro_winkler(&d, &p));
             if sim < 0.55 {
                 score -= 100.0
             } else {
@@ -42,6 +48,12 @@ pub fn rank(
         c.score = score;
     }
     candidates.retain(|c| c.score > 0.0);
+    if has_prefix_match {
+        candidates.retain(|candidate| {
+            candidate.value.to_ascii_lowercase().starts_with(&p)
+                || candidate.display.to_ascii_lowercase().starts_with(&p)
+        });
+    }
     candidates.sort_by(|a, b| {
         b.score
             .total_cmp(&a.score)
@@ -80,5 +92,19 @@ mod tests {
             true,
         );
         assert_eq!(r[0].source, Source::Dynamic);
+    }
+    #[test]
+    fn prefix_match_suppresses_weak_fuzzy_noise() {
+        let r = rank(
+            vec![
+                Candidate::new("--dangerously-skip-permissions", "", Source::LocalHelp),
+                Candidate::new("--agents", "", Source::LocalHelp),
+            ],
+            "--dang",
+            &HashMap::new(),
+            true,
+        );
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].value, "--dangerously-skip-permissions");
     }
 }

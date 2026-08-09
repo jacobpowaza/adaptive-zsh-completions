@@ -4,6 +4,7 @@ use crate::model::QueryContext;
 pub fn parse_context(buffer: &str, cursor: usize) -> QueryContext {
     let cursor = floor_char_boundary(buffer, cursor.min(buffer.len()));
     let before = &buffer[..cursor];
+    let raw_current_len = raw_current_len(before);
     let trailing_space = before.chars().last().is_some_and(char::is_whitespace);
     let mut tokens = tokenize_incomplete(before);
     let current = if trailing_space {
@@ -28,9 +29,42 @@ pub fn parse_context(buffer: &str, cursor: usize) -> QueryContext {
         cursor,
         tokens,
         current,
+        raw_current_len,
         command,
         args,
     }
+}
+
+fn raw_current_len(input: &str) -> usize {
+    let mut token_start = 0;
+    let mut quote = None;
+    let mut escaped = false;
+    let mut in_token = false;
+    let mut count = 0;
+    for ch in input.chars() {
+        if escaped {
+            escaped = false;
+            in_token = true;
+        } else if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            in_token = true;
+        } else if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            }
+            in_token = true;
+        } else if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+            in_token = true;
+        } else if ch.is_whitespace() {
+            in_token = false;
+            token_start = count + 1;
+        } else {
+            in_token = true;
+        }
+        count += 1;
+    }
+    if in_token { count - token_start } else { 0 }
 }
 
 fn floor_char_boundary(value: &str, mut index: usize) -> usize {
@@ -97,5 +131,11 @@ mod tests {
         let c = parse_context("npm run ", 8);
         assert_eq!(c.args, ["run"]);
         assert!(c.current.is_empty());
+    }
+
+    #[test]
+    fn raw_prefix_counts_shell_syntax_for_replacement() {
+        assert_eq!(parse_context("cd space\\ d", 11).raw_current_len, 8);
+        assert_eq!(parse_context("cd 'space d", 11).raw_current_len, 8);
     }
 }

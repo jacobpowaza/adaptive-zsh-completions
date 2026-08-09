@@ -1,7 +1,7 @@
 use super::{Provider, ProviderContext};
 use crate::{
     model::{Candidate, Source},
-    safety::run_informational,
+    safety::run_successful_informational,
 };
 use anyhow::Result;
 use std::time::Duration;
@@ -25,7 +25,7 @@ impl Provider for DockerProvider {
             args.push("-a")
         }
         args.extend(["--format", "{{.Names}}"]);
-        let text = run_informational("docker", args, None, Duration::from_millis(600))?;
+        let text = run_successful_informational("docker", args, None, Duration::from_millis(600))?;
         Ok(text
             .lines()
             .map(|v| Candidate::new(v, "Docker container", Source::Dynamic))

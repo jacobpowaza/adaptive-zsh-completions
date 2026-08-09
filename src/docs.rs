@@ -20,10 +20,8 @@ impl TrustedDocs<'_> {
     pub fn url_for(command: &str, path: &[String]) -> Option<String> {
         let sub = path.first().map(String::as_str).unwrap_or("");
         match command {
-            "git" => Some(format!(
-                "https://git-scm.com/docs/git-{}",
-                if sub.is_empty() { "git" } else { sub }
-            )),
+            "git" if sub.is_empty() => Some("https://git-scm.com/docs/git".into()),
+            "git" => Some(format!("https://git-scm.com/docs/git-{sub}")),
             "gh" => Some("https://cli.github.com/manual/gh".into()),
             "docker" => Some("https://docs.docker.com/reference/cli/docker/".into()),
             "kubectl" => Some("https://kubernetes.io/docs/reference/kubectl/generated/".into()),
@@ -62,7 +60,12 @@ impl DocumentationResolver for TrustedDocs<'_> {
         }
         let mut html = String::new();
         use std::io::Read;
-        response.take(2 * 1024 * 1024).read_to_string(&mut html)?;
+        response
+            .take(2 * 1024 * 1024 + 1)
+            .read_to_string(&mut html)?;
+        if html.len() > 2 * 1024 * 1024 {
+            bail!("official documentation response too large")
+        }
         let text = html_to_text(&html);
         let mut schema = parse_help(command, path, &text);
         schema.confidence = (schema.confidence * 0.95).min(0.91);

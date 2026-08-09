@@ -29,7 +29,7 @@ impl<'a> Discoverer<'a> {
         let fingerprint = fingerprint(&executable)?;
         let key = format!("{command}:{}", path.join("/"));
         if !refresh
-            && let Some(schema) = self.cache.get::<CommandSchema>("schemas", &key)?
+            && let Some(schema) = self.cache.get::<CommandSchema>(&schema_namespace(), &key)?
             && schema.executable_fingerprint == fingerprint
         {
             return Ok(schema);
@@ -41,19 +41,54 @@ impl<'a> Discoverer<'a> {
             None,
             Duration::from_secs(2),
         )
-        .or_else(|_| {
-            if path.is_empty() {
-                run_informational(
-                    executable.to_string_lossy().as_ref(),
-                    ["help"],
-                    None,
-                    Duration::from_secs(2),
-                )
-            } else {
-                Err(anyhow::anyhow!("help unavailable"))
-            }
-        })?;
+        .unwrap_or_default();
         let mut schema = parse_help(command, path, &text);
+        if schema.items.is_empty() {
+            let mut short = path.to_vec();
+            short.push("-h".into());
+            if let Ok(text) = run_informational(
+                executable.to_string_lossy().as_ref(),
+                short,
+                None,
+                Duration::from_secs(2),
+            ) {
+                schema = parse_help(command, path, &text);
+            }
+        }
+        if schema.items.is_empty() {
+            let mut help = vec!["help".to_owned()];
+            help.extend(path.iter().cloned());
+            if let Ok(text) = run_informational(
+                executable.to_string_lossy().as_ref(),
+                help,
+                None,
+                Duration::from_secs(2),
+            ) {
+                schema = parse_help(command, path, &text);
+            }
+        }
+        if schema.items.is_empty()
+            && command
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        {
+            let topic = std::iter::once(command)
+                .chain(path.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join("-");
+            if let Ok(text) = run_informational(
+                "man",
+                ["-P", "cat", topic.as_str()],
+                None,
+                Duration::from_secs(2),
+            ) {
+                schema = parse_help(command, path, &text);
+                schema.confidence = schema.confidence.min(0.68);
+            }
+        }
+        if schema.items.is_empty() {
+            bail!("no completion metadata discovered for {command}");
+        }
         schema.executable_fingerprint = fingerprint;
         schema.discovered_at = now();
         if self.online_docs && schema.items.len() < 3 {
@@ -61,9 +96,13 @@ impl<'a> Discoverer<'a> {
                 merge(&mut schema, official);
             }
         }
-        self.cache.put("schemas", &key, &schema, None)?;
+        self.cache.put(&schema_namespace(), &key, &schema, None)?;
         Ok(schema)
     }
+}
+
+pub fn schema_namespace() -> String {
+    format!("schemas-{}", crate::VERSION)
 }
 
 fn merge(local: &mut CommandSchema, official: CommandSchema) {

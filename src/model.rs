@@ -83,6 +83,7 @@ pub struct QueryContext {
     pub cursor: usize,
     pub tokens: Vec<String>,
     pub current: String,
+    pub raw_current_len: usize,
     pub command: Option<String>,
     pub args: Vec<String>,
 }

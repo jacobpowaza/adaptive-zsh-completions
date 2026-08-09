@@ -127,7 +127,7 @@ Remote data is length-limited and rejected if it contains control characters, ta
 
 ## Configuration
 
-Adaptive works without a config file. To override defaults, create `~/.config/adaptive/config.toml`:
+Adaptive works without a config file. It uses the platform config directory: `~/.config/adaptive/config.toml` on XDG systems and `~/Library/Application Support/adaptive/config.toml` on macOS.
 
 ```toml
 [completion]

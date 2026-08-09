@@ -19,9 +19,8 @@ The Zsh frontend starts a query through process substitution after edits. A new 
 
 Root help is discovered on first encounter. A nested path is discovered only when the parsed root schema confirms that the user reached a subcommand. The safety layer rejects punctuation-bearing discovery path components, closes stdin, removes pagers, caps output at 2 MiB, and kills timed-out children.
 
-Schemas are keyed by command/path and contain a fingerprint derived from executable location, size, and modification time. Provider results carry short TTLs; official docs carry a seven-day TTL. Cache writes use a temporary file plus rename. Pruning enforces age and total-size bounds.
+Schemas are stored in an engine-versioned namespace, keyed by command/path, and contain a fingerprint derived from executable location, size, and modification time. Provider results carry short TTLs; official docs carry a seven-day TTL. Cache writes use a temporary file plus rename. Pruning enforces age and total-size bounds.
 
 ## Frontend boundary
 
 `adaptive query --buffer ... --cursor ... --cwd ...` is the portable boundary for future Bash/Fish integrations. Frontends own keybindings and rendering; they do not need to understand discovery, providers, cache, or ranking.
-

@@ -52,12 +52,28 @@ impl Provider for FilesystemProvider {
             if is_dir {
                 value.push('/')
             }
-            out.push(Candidate::new(
-                value,
+            let insertion = escape_shell_path(&value);
+            let mut candidate = Candidate::new(
+                insertion,
                 if is_dir { "directory" } else { "file" },
                 Source::Filesystem,
-            ));
+            );
+            candidate.display = value;
+            out.push(candidate);
         }
         Ok(out)
     }
+}
+
+fn escape_shell_path(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | '~') {
+            escaped.push(ch);
+        } else {
+            escaped.push('\\');
+            escaped.push(ch);
+        }
+    }
+    escaped
 }

@@ -125,11 +125,29 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
 }
 
 pub fn strip_control(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| matches!(c, '\t' | '\n' | ' ') || (!c.is_control() && *c != '\u{1b}'))
-        .take(16_384)
-        .collect()
+    let mut output = String::new();
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{8}' {
+            output.pop();
+        } else if ch == '\u{1b}' {
+            if chars.next_if_eq(&'[').is_some() {
+                for control in chars.by_ref() {
+                    if ('@'..='~').contains(&control) {
+                        break;
+                    }
+                }
+            } else {
+                let _ = chars.next();
+            }
+        } else if matches!(ch, '\t' | '\n' | ' ') || !ch.is_control() {
+            output.push(ch);
+            if output.len() >= 16_384 {
+                break;
+            }
+        }
+    }
+    output
 }
 
 #[cfg(test)]
@@ -161,6 +179,6 @@ mod tests {
 
     #[test]
     fn strips_terminal_escape_characters() {
-        assert_eq!(strip_control("safe\u{1b}[31m\nBAD"), "safe[31m\nBAD");
+        assert_eq!(strip_control("safe\u{1b}[31m\nB\u{8}BAD"), "safe\nBAD");
     }
 }

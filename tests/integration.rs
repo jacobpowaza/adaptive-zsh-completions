@@ -40,13 +40,13 @@ fn generic_help_and_lazy_subcommand_discovery() {
     let tool = bin.join("test-tool");
     fs::write(
         &tool,
-        "#!/bin/sh\nif [ \"$1\" = serve ]; then\ncat <<'EOF'\nUsage: test-tool serve [OPTIONS]\nOptions:\n  --dangerously-fast  Move fast\nEOF\nelse\ncat <<'EOF'\nUsage: test-tool [COMMAND]\nCommands:\n  serve  Start server\nOptions:\n  -v, --verbose  Verbose\nEOF\nfi\n",
+        "#!/bin/sh\nif [ \"$1\" = serve ] && [ \"$2\" = deploy ]; then\ncat <<'EOF'\nUsage: test-tool serve deploy [OPTIONS]\nOptions:\n  --dangerously-fast  Move fast\nEOF\nelif [ \"$1\" = serve ]; then\ncat <<'EOF'\nUsage: test-tool serve [COMMAND]\nCommands:\n  deploy  Deploy server\nEOF\nelse\ncat <<'EOF'\nUsage: test-tool [COMMAND]\nCommands:\n  serve  Start server\nOptions:\n  -v, --verbose  Verbose\nEOF\nfi\n",
     )
     .unwrap();
     fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let output = cargo_bin_cmd!("adaptive")
-        .args(["query", "--buffer", "test-tool serve --dang"])
+        .args(["query", "--buffer", "test-tool serve deploy --dang"])
         .env("PATH", path)
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
         .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
@@ -56,7 +56,7 @@ fn generic_help_and_lazy_subcommand_discovery() {
     assert!(output.status.success());
     let body: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(body["candidates"][0]["value"], "--dangerously-fast");
-    assert!(temp.path().join("cache/schemas").is_dir());
+    assert!(temp.path().join("cache/schemas-0.1.0").is_dir());
 }
 
 #[test]
@@ -113,9 +113,12 @@ fn package_json_and_git_branch_providers_are_contextual() {
 fn filesystem_and_history_fallback_work_through_protocol() {
     let temp = isolated();
     fs::create_dir(temp.path().join("projects")).unwrap();
+    fs::create_dir(temp.path().join("space dir")).unwrap();
     fs::write(temp.path().join("profile.txt"), "data").unwrap();
     let directories = query(&temp, "cd pro", temp.path());
     assert_eq!(directories["candidates"][0]["value"], "projects/");
+    let spaced = query(&temp, "cd spa", temp.path());
+    assert_eq!(spaced["candidates"][0]["value"], "space\\ dir/");
 
     let status = cargo_bin_cmd!("adaptive")
         .args(["history", "record", "--", "mysterycmd", "alpha", "beta"])
@@ -232,9 +235,13 @@ fn zsh_frontend_loads_without_overwriting_unrelated_emacs_bindings() {
     let script = format!(
         r#"bindkey -e
 before=$(bindkey '^A')
+before_tab=$(bindkey '^I')
+before_enter=$(bindkey '^M')
 eval "$({} init zsh)"
 after=$(bindkey '^A')
 [[ "$before" = "$after" ]]
+[[ "$before_tab" = "$(bindkey '^I')" ]]
+[[ "$before_enter" = "$(bindkey '^M')" ]]
 zle -l | grep -E 'adaptive-forward-char|adaptive-menu-tab|adaptive-menu-enter'
 "#,
         binary.display()

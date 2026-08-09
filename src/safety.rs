@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     io::Read,
     process::{Command, Stdio},
     time::Duration,
@@ -35,6 +35,45 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
+    run_informational_impl(
+        program,
+        args.into_iter()
+            .map(|arg| arg.as_ref().to_owned())
+            .collect(),
+        cwd,
+        timeout,
+        false,
+    )
+}
+
+pub fn run_successful_informational<I, S>(
+    program: &str,
+    args: I,
+    cwd: Option<&std::path::Path>,
+    timeout: Duration,
+) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run_informational_impl(
+        program,
+        args.into_iter()
+            .map(|arg| arg.as_ref().to_owned())
+            .collect(),
+        cwd,
+        timeout,
+        true,
+    )
+}
+
+fn run_informational_impl(
+    program: &str,
+    args: Vec<OsString>,
+    cwd: Option<&std::path::Path>,
+    timeout: Duration,
+    require_success: bool,
+) -> Result<String> {
     if program.contains('\0') || program.is_empty() {
         bail!("invalid executable");
     }
@@ -81,7 +120,7 @@ where
             .and_then(|handle| handle.join().ok())
             .unwrap_or_default();
     }
-    if !status.success() && bytes.is_empty() {
+    if !status.success() && (bytes.is_empty() || require_success) {
         bail!("informational command failed with {status}");
     }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
@@ -112,5 +151,17 @@ mod tests {
     #[test]
     fn restricts_discovery_path() {
         assert!(safe_help_args(&["$(touch nope)".into()]).is_err());
+    }
+    #[test]
+    fn strict_informational_calls_reject_error_output() {
+        assert!(
+            run_successful_informational(
+                "sh",
+                ["-c", "echo failure >&2; exit 1"],
+                None,
+                Duration::from_secs(1)
+            )
+            .is_err()
+        );
     }
 }
