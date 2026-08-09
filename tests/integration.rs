@@ -290,7 +290,12 @@ BUFFER='git clone '
 CURSOR=$#BUFFER
 _adaptive_set_ghost 'https://github.com/'
 [[ "$POSTDISPLAY" = 'https://github.com/' ]]
-[[ "${{region_highlight[-1]}}" = *'fg=8' ]]
+[[ "${{region_highlight[-1]}}" = *'fg=245' ]]
+ADAPTIVE_VALUES=(one two)
+ADAPTIVE_SOURCES=(dynamic dynamic)
+! _adaptive_should_menu
+ADAPTIVE_SOURCES=(filesystem filesystem)
+_adaptive_should_menu
 "#,
         binary.display()
     );
@@ -306,6 +311,36 @@ _adaptive_set_ghost 'https://github.com/'
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("adaptive-menu-right"));
     assert!(stdout.contains("adaptive-menu-tab"));
+}
+
+#[test]
+fn zsh_protocol_labels_candidate_sources() {
+    let temp = isolated();
+    fs::create_dir(temp.path().join("alpha")).unwrap();
+    fs::create_dir(temp.path().join("alpine")).unwrap();
+    let output = cargo_bin_cmd!("adaptive")
+        .args([
+            "query",
+            "--format",
+            "zsh",
+            "--buffer",
+            "cd al",
+            "--cwd",
+            temp.path().to_str().unwrap(),
+        ])
+        .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
+        .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
+        .env("ADAPTIVE_CONFIG", temp.path().join("config.toml"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let protocol = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        protocol
+            .lines()
+            .skip(1)
+            .all(|line| line.ends_with("\tfilesystem"))
+    );
 }
 
 #[test]

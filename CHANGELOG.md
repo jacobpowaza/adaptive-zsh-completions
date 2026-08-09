@@ -2,6 +2,14 @@
 
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and semantic versioning.
 
+## [0.1.2] - 2026-08-09
+
+### Changed
+
+- Show the highest-ranked command, flag, branch, script, or repository candidate as an inline recommendation even when alternatives exist.
+- Reserve the compact candidate menu for ambiguous filesystem paths.
+- Match the previous local autosuggestion appearance with a darker `fg=245` default.
+
 ## [0.1.1] - 2026-08-09
 
 ### Changed
@@ -22,3 +30,4 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 [0.1.0]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.1.0
 [0.1.1]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.1.1
+[0.1.2]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.1.2

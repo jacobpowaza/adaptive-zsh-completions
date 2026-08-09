@@ -7,7 +7,7 @@ ZSHRC=${ADAPTIVE_ZSHRC:-"$HOME/.zshrc"}
 VERSION=${ADAPTIVE_VERSION:-latest}
 ACCEPT_KEY=${ADAPTIVE_ACCEPT_KEY:-'^I'}
 MENU_NEXT_KEY=${ADAPTIVE_MENU_NEXT_KEY:-'^[[C'}
-GHOST_STYLE=${ADAPTIVE_GHOST_STYLE:-'fg=8'}
+GHOST_STYLE=${ADAPTIVE_GHOST_STYLE:-'fg=245'}
 
 say() { printf '%s\n' "$*"; }
 fail() { say "adaptive installer: $*" >&2; exit 1; }

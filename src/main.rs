@@ -170,10 +170,14 @@ fn print_zsh(r: &QueryResponse) {
     println!("{}\t{}\t{}", r.request_id, r.prefix_len, r.candidates.len());
     for c in &r.candidates {
         println!(
-            "{}\t{}\t{}",
+            "{}\t{}\t{}\t{}",
             clean(&c.value),
             clean(&c.display),
-            clean(&c.description)
+            clean(&c.description),
+            serde_json::to_value(c.source)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_default()
         );
     }
 }

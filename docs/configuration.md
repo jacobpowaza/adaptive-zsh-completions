@@ -35,6 +35,8 @@ export ADAPTIVE_MENU_NEXT_KEY='^[[C'
 export ADAPTIVE_ENTER_ACCEPTS_MENU=1
 ```
 
+Adaptive renders the highest-ranked non-filesystem recommendation inline. The compact menu is reserved for multiple filesystem candidates.
+
 The installer also accepts `ADAPTIVE_ACCEPT_KEY`, `ADAPTIVE_MENU_NEXT_KEY`, and `ADAPTIVE_GHOST_STYLE` and writes their quoted values into its managed block.
 
 Cache defaults to the platform cache directory and history defaults to the platform local-data directory. `ADAPTIVE_CACHE_DIR` and `ADAPTIVE_DATA_DIR` are available for controlled test environments.

@@ -8,7 +8,7 @@ $ git clone https://github.com/jacobpowaza/r
   jacobpowaza/relay-plugins.git  Relay plugins
 ```
 
-Adaptive discovers what a command accepts, resolves what the current argument means, and ranks useful values from local context. One strong match appears as ghost text. Several useful matches appear in a small menu below the prompt.
+Adaptive discovers what a command accepts, resolves what the current argument means, and ranks useful values from local context. Its best recommendation appears as inline ghost text. Ambiguous filesystem paths appear in a small menu below the prompt.
 
 > [!NOTE]
 > v0.1 ships a complete Zsh frontend. The protocol and core are shell-independent; Bash and Fish frontends are planned.
@@ -89,7 +89,8 @@ Claude, Codex, and other installed CLIs are not encoded as special cases. Adapti
 ## Zsh controls
 
 - Tab accepts ghost text or the selected menu candidate. Set `ADAPTIVE_ACCEPT_KEY` before initialization to change it.
-- Ghost text is rendered inline in dim gray by default. Set `ADAPTIVE_GHOST_STYLE` to any ZLE highlight style (for example, `fg=245`) before initialization to change it.
+- The highest-ranked command, flag, branch, script, or repository recommendation stays inline in dark gray—even when alternatives exist.
+- Ambiguous files and directories use the compact menu. Set `ADAPTIVE_GHOST_STYLE` to any ZLE highlight style before initialization to change the inline color.
 - Right arrow cycles a visible candidate menu; Up/Down work too. Set `ADAPTIVE_MENU_NEXT_KEY` to change it.
 - Press 1–9 to accept that numbered menu item immediately. Escape dismisses the menu.
 - Enter runs the command by default. Set `ADAPTIVE_ENTER_ACCEPTS_MENU=1` to make Enter accept an open menu.
