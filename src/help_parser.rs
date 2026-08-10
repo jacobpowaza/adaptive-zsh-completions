@@ -2,14 +2,53 @@ use regex::Regex;
 
 use crate::model::{CommandSchema, ItemKind, SchemaItem};
 
+fn add_subcommand_if_new(items: &mut Vec<SchemaItem>, name: &str) {
+    if items
+        .iter()
+        .any(|item| item.kind == ItemKind::Subcommand && item.names.iter().any(|n| n == name))
+    {
+        return;
+    }
+    items.push(SchemaItem {
+        names: vec![name.to_owned()],
+        kind: ItemKind::Subcommand,
+        value_hint: None,
+        values: vec![],
+        description: String::new(),
+    });
+}
+
 pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
     let option = Regex::new(r"^\s*((?:-[A-Za-z0-9?](?:,?\s+)?)?(?:--[A-Za-z0-9][A-Za-z0-9_-]*)?)(?:[ =]+(?:<([^>]+)>|\[([^\]]+)\]|([A-Z][A-Z0-9_-]*)))?\s{2,}(.*)$").unwrap();
-    let subcommand =
-        Regex::new(r"^\s{2,}([a-zA-Z0-9][a-zA-Z0-9_-]*(?:,\s*[a-zA-Z0-9_-]+)*)\s{2,}(.+)$")
-            .unwrap();
+    let subcommand = Regex::new(
+        r"^\s{2,}([a-zA-Z0-9][a-zA-Z0-9_-]*(?:,\s*[a-zA-Z0-9_-]+)*):?\s{2,}(.+)$",
+    )
+    .unwrap();
+    // A wrapped bullet list ("- access", "- upgrade-interactive / upgradeInteractive").
+    let bullet = Regex::new(r"^-\s+([a-zA-Z][a-zA-Z0-9_-]*)").unwrap();
     let usage_re = Regex::new(r"(?i)^\s*usage:\s*(.+)$").unwrap();
     let inline_flag =
         Regex::new(r"(?:^|[\s\[|,])(-[A-Za-z0-9?]|--[A-Za-z0-9][A-Za-z0-9_-]*)").unwrap();
+    // Some CLIs (brew, npm, ...) never print a "Commands:" table at all --
+    // their examples/usage lines just repeat the invocation, e.g.
+    // "brew install FORMULA|CASK...". Recognize that shape directly: the
+    // line starts with this exact command (plus any already-known path, for
+    // nested subcommand help) followed by a lowercase word, which is almost
+    // always the subcommand name itself.
+    let mut invocation = command.to_owned();
+    for segment in path {
+        invocation.push(' ');
+        invocation.push_str(segment);
+    }
+    let usage_line = Regex::new(&format!(
+        r"^\s*{}\s+([a-z][a-z0-9_-]*)",
+        regex::escape(&invocation)
+    ))
+    .unwrap();
+    // Others (npm's "All commands:") list bare names wrapped across several
+    // comma-separated lines with no per-item description at all.
+    let comma_list =
+        Regex::new(r"^[a-zA-Z][a-zA-Z0-9_-]*(?:,\s*[a-zA-Z][a-zA-Z0-9_-]*)*,?$").unwrap();
     let mut section = "";
     let mut items = Vec::new();
     let mut usage = None;
@@ -29,7 +68,9 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
             section = "commands";
             continue;
         }
-        if matches!(heading.as_str(), "options" | "flags" | "global options") {
+        if matches!(heading.as_str(), "options" | "flags" | "global options")
+            || ((heading.contains("options") || heading.contains("flags")) && heading.len() < 100)
+        {
             section = "options";
             continue;
         }
@@ -38,6 +79,57 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
             "arguments" | "args" | "positional arguments"
         ) {
             section = "arguments";
+            continue;
+        }
+        // Many CLIs group their command table under thematic headings instead
+        // of a literal "Commands:" ("Manage your dependencies:", "CORE
+        // COMMANDS", ...). Treat any other heading-shaped line as one more
+        // such group, unless it's a doc-convention section that is never a
+        // command list -- otherwise "ENVIRONMENT VARIABLES" or "EXAMPLES"
+        // would have their columnar entries misread as subcommands.
+        const NON_COMMAND_HEADINGS: &[&str] = &[
+            "example",
+            "examples",
+            "description",
+            "notes",
+            "note",
+            "see also",
+            "environment",
+            "environment variables",
+            "files",
+            "author",
+            "authors",
+            "bugs",
+            "copyright",
+            "exit status",
+            "exit codes",
+            "homepage",
+            "reporting bugs",
+            "license",
+            "aliases",
+            "configuration",
+        ];
+        if !trimmed.is_empty() && trimmed.ends_with(':') && trimmed.len() < 100 {
+            section = if NON_COMMAND_HEADINGS.contains(&heading.as_str()) {
+                ""
+            } else {
+                "commands"
+            };
+            continue;
+        }
+        if !trimmed.is_empty()
+            && trimmed.len() < 60
+            && trimmed == trimmed.to_ascii_uppercase()
+            && trimmed.chars().any(char::is_alphabetic)
+            && !trimmed.starts_with('-')
+        {
+            // All-caps section headers with no trailing colon (man-page /
+            // `gh`-style: "CORE COMMANDS", "EXAMPLES").
+            section = if NON_COMMAND_HEADINGS.contains(&heading.as_str()) {
+                ""
+            } else {
+                "commands"
+            };
             continue;
         }
 
@@ -74,13 +166,25 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
         if section == "commands"
             && let Some(c) = subcommand.captures(&line)
         {
-            items.push(SchemaItem {
-                names: c[1].split(',').map(|s| s.trim().to_owned()).collect(),
-                kind: ItemKind::Subcommand,
-                value_hint: None,
-                values: vec![],
-                description: c[2].trim().to_owned(),
-            });
+            let names: Vec<String> = c[1].split(',').map(|s| s.trim().to_owned()).collect();
+            let description = c[2].trim().to_owned();
+            if let Some(existing) = items.iter_mut().find(|item| {
+                item.kind == ItemKind::Subcommand
+                    && item.names.iter().any(|n| names.contains(n))
+            }) {
+                existing.names = names;
+                if existing.description.is_empty() {
+                    existing.description = description;
+                }
+            } else {
+                items.push(SchemaItem {
+                    names,
+                    kind: ItemKind::Subcommand,
+                    value_hint: None,
+                    values: vec![],
+                    description,
+                });
+            }
         } else if section == "arguments"
             && let Some(c) = subcommand.captures(&line)
         {
@@ -91,6 +195,23 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
                 values: vec![],
                 description: c[2].trim().to_owned(),
             });
+        } else if section == "commands" && trimmed.contains(',') && comma_list.is_match(trimmed) {
+            // A wrapped, description-less list of names (npm's "All
+            // commands:" block): every comma-separated word is a subcommand.
+            for name in trimmed.split(',') {
+                let name = name.trim();
+                if !name.is_empty() {
+                    add_subcommand_if_new(&mut items, name);
+                }
+            }
+        } else if section == "commands"
+            && let Some(c) = bullet.captures(trimmed)
+        {
+            // "- name" / "- name / alias" bullet lists (yarn's "Commands:").
+            add_subcommand_if_new(&mut items, &c[1]);
+        }
+        if let Some(c) = usage_line.captures(&line) {
+            add_subcommand_if_new(&mut items, &c[1]);
         }
         for capture in inline_flag.captures_iter(&line) {
             let name = capture[1].to_owned();
