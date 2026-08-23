@@ -4,6 +4,8 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-23
+
 ### Added
 
 - Persistent learned usage profile: next-token transitions per exact command path, command-to-command sequences, directory affinities, and explicit accept/reject feedback — all with half-life recency weighting so recent habits outweigh old ones without erasing them (`history.json` schema v2; old files load unchanged).
@@ -27,9 +29,6 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Global usage priors for bare command names are applied to learned candidates as a tie-breaker; directory affinity outranks them.
 - Global usage priors (`data/priors.toml`, extendable per user via `~/.config/adaptive/priors.toml` or `ADAPTIVE_PRIORS`) keyed by full command path, with directory-context variants for Git work trees and Node projects.
 - Well-known subcommands as completion candidates for tools whose `--help` cannot be parsed, such as `kubectl`.
-
-### Changed
-
 - Rank candidates by position validity, global usage, personal frequency and recency, and prefix quality, instead of source confidence with per-command nudges.
 - Rank subcommands above flags wherever a subcommand is valid, and keep flags in the Tab list after them.
 - Predict the next token at an untyped position for any command with a known default (`brew ` to `install`, `docker compose ` to `up`), not just for a hardcoded few.
@@ -66,3 +65,4 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 [0.1.0]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.1.0
 [0.1.1]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.1.1
 [0.1.2]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.1.2
+[0.2.0]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.2.0
