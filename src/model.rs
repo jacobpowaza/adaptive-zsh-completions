@@ -65,8 +65,8 @@ pub enum Source {
     OfficialDocs,
     Filesystem,
     Command,
-    /// A well-known continuation from the global prior table, offered when
-    /// discovery could not read the tool's own metadata (see `crate::priors`).
+    /// A common continuation from the global prior table, offered when the
+    /// tool's own help did not spell one out (see `crate::priors`).
     Prior,
     History,
 }

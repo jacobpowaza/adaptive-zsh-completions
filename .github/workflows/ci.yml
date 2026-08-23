@@ -20,5 +20,7 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all --locked
       - run: zsh -n shell/adaptive.zsh
+      - run: bash -n shell/adaptive.bash
       - run: sh -n install.sh && sh -n uninstall.sh
       - run: ./tests/install.sh
+      - run: bash tests/frontend.bash

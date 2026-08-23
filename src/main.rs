@@ -144,13 +144,11 @@ fn run() -> Result<()> {
             );
             print!("{}", include_str!("../shell/adaptive.zsh"));
         }
-        Command::Init { shell } => {
-            let name = match shell {
-                Shell::Bash => "Bash",
-                Shell::Fish => "Fish",
-                _ => unreachable!(),
-            };
-            anyhow::bail!("{name} frontend architecture is documented but not implemented in v0.1")
+        Command::Init { shell: Shell::Bash } => {
+            print!("{}", include_str!("../shell/adaptive.bash"));
+        }
+        Command::Init { shell: Shell::Fish } => {
+            anyhow::bail!("the Fish frontend is planned; track it in the README roadmap")
         }
         Command::Query(q) => {
             let config = Config::load()?;
@@ -378,6 +376,18 @@ fn doctor() -> Result<()> {
             "managed block found"
         } else {
             "not detected; add `eval \"$(adaptive init zsh)\"`"
+        }
+    );
+    let bashrc = dirs::home_dir().map(|p| p.join(".bashrc"));
+    let bash_integrated = bashrc.as_deref().is_some_and(|p| {
+        std::fs::read_to_string(p).is_ok_and(|s| s.contains("adaptive init bash"))
+    });
+    println!(
+        "Bash integration: {}",
+        if bash_integrated {
+            "detected"
+        } else {
+            "not detected; add `eval \"$(adaptive init bash)\"` (requires bash >= 4)"
         }
     );
     Ok(())

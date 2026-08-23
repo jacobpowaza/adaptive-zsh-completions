@@ -371,6 +371,54 @@ fn gitlab_forge_provider_uses_the_shared_protocol() {
     handle.join().unwrap();
 }
 
+// The untyped URL slot after `git clone` is canonical: the generic forge
+// prefix ghosts there even when one specific repository dominates memory,
+// and the slot survives its own option row (`--depth 1`). A specific repo is
+// reached by typing its owner, which re-engages the forge provider.
+#[test]
+fn forge_prefix_beats_remembered_urls_and_survives_clone_flags() {
+    let temp = isolated();
+    for _ in 0..4 {
+        record_in(
+            &temp,
+            None,
+            None,
+            &["git", "clone", "https://github.com/usestrix/x"],
+        );
+    }
+    let plain = query_with(&temp, "git clone ", temp.path(), &["--offline"]);
+    assert_eq!(plain["candidates"][0]["value"], "https://github.com/");
+    assert!(
+        !plain.to_string().contains("usestrix"),
+        "remembered URL leaked into the prefix slot: {plain}"
+    );
+
+    let flagged = query_with(&temp, "git clone --depth 1 ", temp.path(), &["--offline"]);
+    assert_eq!(flagged["candidates"][0]["value"], "https://github.com/");
+    assert!(
+        !flagged.to_string().contains("usestrix"),
+        "remembered URL leaked into the flagged prefix slot: {flagged}"
+    );
+    assert!(
+        !flagged["candidates"][0]["value"]
+            .as_str()
+            .unwrap()
+            .starts_with('-'),
+        "a flag outranked the URL prefix at an empty URL slot"
+    );
+
+    // Once a positional argument exists, the cursor left the URL slot and no
+    // prefix is invented for it.
+    let filled = query_with(&temp, "git clone x ", temp.path(), &["--offline"]);
+    let values: Vec<&str> = filled["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["value"].as_str().unwrap_or_default())
+        .collect();
+    assert!(!values.contains(&"https://github.com/"));
+}
+
 #[test]
 fn zsh_frontend_loads_without_overwriting_unrelated_emacs_bindings() {
     let binary = assert_cmd::cargo::cargo_bin!("adaptive");

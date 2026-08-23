@@ -10,7 +10,7 @@ Adaptive is a shell-independent Rust library with a thin CLI protocol. Shells se
 4. `discovery` resolves only executable metadata and bounded informational help operations when no contextual provider spoke.
 5. `help_parser` extracts uncertain schema items with an explicit confidence score.
 6. `native` may prefer an adapter's machine-oriented protocol when its signature is detected.
-7. `priors` supplies global usage defaults for the exact position being completed, and fills in well-known subcommands when discovery came up empty.
+7. `priors` supplies global usage defaults for the exact position being completed, and offers common subcommands for positions a tool's own help left undocumented.
 8. `ranking` combines position validity (source confidence and candidate kind), global priors, personal frequency and recency from the profile's precomputed indexes, explicit accept/reject feedback, and prefix/fuzzy quality. Flags are demoted unless the current token begins with `-`, so a position that accepts a subcommand answers with subcommands and lists flags after them.
 9. The engine echoes a `context_key` identifying this exact completion position; frontends return it with accept/reject feedback so learning lands back on the same context.
 10. The response is serialized to JSON or sanitized Zsh records.
@@ -43,10 +43,10 @@ Priors are ordinary data (`data/priors.toml`, overridable per user), keyed by fu
 
 ## Discovery and cache
 
-Root help is discovered on first encounter. A nested path is discovered only when the parsed root schema confirms that the user reached a subcommand. The safety layer rejects punctuation-bearing discovery path components, closes stdin, removes pagers, caps output at 2 MiB, and kills timed-out children.
+Root help is discovered on first encounter through a bounded probe chain: `--help`, `-h`, `help`, `list` (for Symfony Console tools such as Poetry, whose bare `--help` describes a hidden `list` command), and finally the man page at reduced confidence. Parser regressions against captured real-world output (kubectl's grouped sections, Symfony listings) live in `src/help_parser.rs` tests. A nested path is discovered only when the parsed root schema confirms that the user reached a subcommand. The safety layer rejects punctuation-bearing discovery path components, closes stdin, removes pagers, caps output at 2 MiB, and kills timed-out children.
 
 Schemas are stored in an engine-versioned namespace, keyed by command/path, and contain a fingerprint derived from executable location, size, and modification time. Provider results carry short TTLs; official docs carry a seven-day TTL. Cache writes use a temporary file plus rename. Pruning enforces age and total-size bounds.
 
 ## Frontend boundary
 
-`adaptive query --buffer ... --cursor ... --cwd ...` is the portable boundary for future Bash/Fish integrations. Frontends may add `--list` for an explicit alternatives listing; without it, the existing prefix-focused response is unchanged. Frontends own keybindings and rendering; they do not need to understand discovery, providers, cache, or ranking.
+`adaptive query --buffer ... --cursor ... --cwd ...` is the portable boundary shared by the Zsh and Bash frontends. Frontends may add `--list` for an explicit alternatives listing; without it, the existing prefix-focused response is unchanged. Frontends own keybindings and rendering; they do not need to understand discovery, providers, cache, or ranking.

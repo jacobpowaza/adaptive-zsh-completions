@@ -86,9 +86,48 @@ impl Provider for ForgeProvider {
     }
 
     fn matches(&self, context: &ProviderContext<'_>) -> bool {
-        context.forge_enabled
-            && context.query.command.as_deref() == Some("git")
-            && context.query.args.as_slice() == ["clone"]
+        if !context.forge_enabled || context.query.command.as_deref() != Some("git") {
+            return false;
+        }
+        // The URL slot survives its own option row: `git clone --depth 1 `
+        // still expects a repository next, so only flags (and their values)
+        // may sit between `clone` and the cursor. A plain positional means a
+        // repository argument was already given and the cursor is elsewhere.
+        let Some(clone_index) = context.query.args.iter().position(|arg| arg == "clone") else {
+            return false;
+        };
+        const VALUE_FLAGS: &[&str] = &[
+            "-b",
+            "-c",
+            "-j",
+            "-o",
+            "-u",
+            "--branch",
+            "--depth",
+            "--deepen",
+            "--jobs",
+            "--origin",
+            "--reference",
+            "--reference-if-able",
+            "--server-option",
+            "--shallow-exclude",
+            "--shallow-since",
+            "--template",
+            "--upload-pack",
+        ];
+        let mut expecting_value = false;
+        for arg in &context.query.args[clone_index + 1..] {
+            if expecting_value {
+                expecting_value = false;
+                continue;
+            }
+            if arg.starts_with('-') {
+                expecting_value = !arg.contains('=') && VALUE_FLAGS.contains(&arg.as_str());
+                continue;
+            }
+            return false;
+        }
+        true
     }
 
     fn complete(&self, context: &ProviderContext<'_>) -> Result<Vec<Candidate>> {

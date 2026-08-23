@@ -1,0 +1,3 @@
+# Default ownership: every file. Keeps review routing correct if required
+# reviews are ever tightened, and documents who answers security reports.
+* @jacobpowaza
