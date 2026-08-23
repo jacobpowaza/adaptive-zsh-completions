@@ -8,6 +8,7 @@ pub mod history;
 pub mod model;
 pub mod native;
 pub mod parser;
+pub mod priors;
 pub mod providers;
 pub mod ranking;
 pub mod safety;

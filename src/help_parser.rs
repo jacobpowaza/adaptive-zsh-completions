@@ -20,10 +20,9 @@ fn add_subcommand_if_new(items: &mut Vec<SchemaItem>, name: &str) {
 
 pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
     let option = Regex::new(r"^\s*((?:-[A-Za-z0-9?](?:,?\s+)?)?(?:--[A-Za-z0-9][A-Za-z0-9_-]*)?)(?:[ =]+(?:<([^>]+)>|\[([^\]]+)\]|([A-Z][A-Z0-9_-]*)))?\s{2,}(.*)$").unwrap();
-    let subcommand = Regex::new(
-        r"^\s{2,}([a-zA-Z0-9][a-zA-Z0-9_-]*(?:,\s*[a-zA-Z0-9_-]+)*):?\s{2,}(.+)$",
-    )
-    .unwrap();
+    let subcommand =
+        Regex::new(r"^\s{2,}([a-zA-Z0-9][a-zA-Z0-9_-]*(?:,\s*[a-zA-Z0-9_-]+)*):?\s{2,}(.+)$")
+            .unwrap();
     // A wrapped bullet list ("- access", "- upgrade-interactive / upgradeInteractive").
     let bullet = Regex::new(r"^-\s+([a-zA-Z][a-zA-Z0-9_-]*)").unwrap();
     let usage_re = Regex::new(r"(?i)^\s*usage:\s*(.+)$").unwrap();
@@ -169,8 +168,7 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
             let names: Vec<String> = c[1].split(',').map(|s| s.trim().to_owned()).collect();
             let description = c[2].trim().to_owned();
             if let Some(existing) = items.iter_mut().find(|item| {
-                item.kind == ItemKind::Subcommand
-                    && item.names.iter().any(|n| names.contains(n))
+                item.kind == ItemKind::Subcommand && item.names.iter().any(|n| names.contains(n))
             }) {
                 existing.names = names;
                 if existing.description.is_empty() {

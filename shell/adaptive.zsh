@@ -3,7 +3,9 @@
 #
 # Interaction states:
 #   IDLE            no suggestion, no selector
-#   GHOST           one predicted continuation of a user-typed prefix, shown dim
+#   GHOST           the engine's predicted continuation -- of a typed prefix
+#                   or, proactively, of an untyped position (trailing space,
+#                   fresh prompt) -- shown dim; arrows cycle, ESC rejects
 #   OPTION_SELECTOR explicit candidate browser opened by TAB with no ghost active
 #   (JUST_ACCEPTED is simply IDLE again: acceptance never carries forward
 #    permission to keep auto-suggesting without new user intent)
@@ -20,6 +22,7 @@
 
 typeset -g ADAPTIVE_QUERY_FD="" ADAPTIVE_QUERY_BUFFER="" ADAPTIVE_QUERY_CURSOR=0 ADAPTIVE_QUERY_KIND="ghost"
 typeset -g ADAPTIVE_PREFIX_LEN=0 ADAPTIVE_INDEX=1 ADAPTIVE_SELECTOR_ACTIVE=0 ADAPTIVE_LIST_INDEX=1
+typeset -g ADAPTIVE_CONTEXT_KEY="" ADAPTIVE_PREV_CMD=""
 typeset -ga ADAPTIVE_VALUES ADAPTIVE_DISPLAYS ADAPTIVE_DESCRIPTIONS ADAPTIVE_SOURCES
 typeset -ga ADAPTIVE_LIST_VALUES ADAPTIVE_LIST_DISPLAYS ADAPTIVE_LIST_DESCRIPTIONS ADAPTIVE_LIST_SOURCES
 typeset -ga ADAPTIVE_OWN_HIGHLIGHTS region_highlight
@@ -62,18 +65,17 @@ _adaptive_set_ghost() {
   fi
 }
 
-# Renders ADAPTIVE_VALUES[ADAPTIVE_INDEX] as ghost text. With an empty
-# current token this only auto-suggests when there is exactly one candidate
-# (an unambiguous, high-confidence continuation like "git clone " ->
-# https://github.com/); with two or more it stays silent and waits for
-# either a typed prefix or an explicit TAB into the option selector. This is
-# what stops acceptance from handing the engine permission to keep
-# manufacturing further tokens on its own.
+# Renders ADAPTIVE_VALUES[ADAPTIVE_INDEX] as ghost text. With a typed prefix
+# only prefix-consistent candidates render; with an empty current token the
+# engine's top-ranked prediction renders immediately -- that is the whole
+# point of prediction ("git ", "claude ", an untouched prompt). The engine
+# collapses to exactly one candidate where it is decisive; otherwise the
+# ghost shows its best guess and arrow keys cycle alternatives, ESC dismisses
+# (a learned rejection), and TAB browses everything.
 _adaptive_render_current() {
   _adaptive_clear_ghost
   (( ${#ADAPTIVE_VALUES} )) || { _adaptive_log "render_current gate=fail reason=no_values"; return 1 }
   (( CURSOR == $#BUFFER )) || { _adaptive_log "render_current gate=fail reason=cursor_not_at_end"; return 1 }
-  (( ADAPTIVE_PREFIX_LEN > 0 || ${#ADAPTIVE_VALUES} == 1 )) || { _adaptive_log "render_current gate=fail reason=needs_prefix prefix_len=$ADAPTIVE_PREFIX_LEN values=${#ADAPTIVE_VALUES}"; return 1 }
   [[ "$ADAPTIVE_GHOST_TEXT" == 1 ]] || { _adaptive_log "render_current gate=fail reason=ghost_text_disabled"; return 1 }
   local typed candidate="${ADAPTIVE_VALUES[ADAPTIVE_INDEX]}"
   # $LBUFFER[-0,-1] is NOT empty in zsh -- negative zero slices as the whole
@@ -150,9 +152,10 @@ _adaptive_reset() {
 }
 
 _adaptive_load_results() {
-  local fd=$1 value display description source count request
+  local fd=$1 value display description source count request context_key
   local -a values displays descriptions sources
-  if IFS=$'\t' read -r request ADAPTIVE_PREFIX_LEN count <&$fd; then
+  if IFS=$'\t' read -r request ADAPTIVE_PREFIX_LEN count context_key <&$fd; then
+    ADAPTIVE_CONTEXT_KEY="${context_key}"
     while IFS=$'\t' read -r value display description source <&$fd; do
       values+=("$value"); displays+=("$display")
       descriptions+=("$description"); sources+=("$source")
@@ -230,7 +233,7 @@ _adaptive_schedule() {
   ADAPTIVE_QUERY_KIND="ghost"
   ADAPTIVE_QUERY_BUFFER="$BUFFER"
   ADAPTIVE_QUERY_CURSOR=$CURSOR
-  exec {ADAPTIVE_QUERY_FD}< <(adaptive query --format zsh --buffer "$BUFFER" --cursor "$CURSOR" --cwd "$PWD" 2>/dev/null)
+  exec {ADAPTIVE_QUERY_FD}< <(adaptive query --format zsh --buffer "$BUFFER" --cursor "$CURSOR" --cwd "$PWD" --prev "$ADAPTIVE_PREV_CMD" 2>/dev/null)
   zle -F -w "$ADAPTIVE_QUERY_FD" adaptive-ready
 }
 
@@ -241,8 +244,19 @@ _adaptive_schedule_selector() {
   ADAPTIVE_QUERY_KIND="selector"
   ADAPTIVE_QUERY_BUFFER="$BUFFER"
   ADAPTIVE_QUERY_CURSOR=$CURSOR
-  exec {ADAPTIVE_QUERY_FD}< <(adaptive query --format zsh --list --buffer "$BUFFER" --cursor "$CURSOR" --cwd "$PWD" 2>/dev/null)
+  exec {ADAPTIVE_QUERY_FD}< <(adaptive query --format zsh --list --buffer "$BUFFER" --cursor "$CURSOR" --cwd "$PWD" --prev "$ADAPTIVE_PREV_CMD" 2>/dev/null)
   zle -F -w "$ADAPTIVE_QUERY_FD" adaptive-ready
+}
+
+# ---- learning feedback -------------------------------------------------------
+# Fire-and-forget reports of explicit accept/dismiss decisions. The engine
+# echoes a context key with every response; sending it back lets the ranking
+# layer strengthen or demote the exact suggestion at the exact position,
+# without the shell ever re-deriving engine internals.
+_adaptive_send_feedback() {
+  local verdict="$1" value="$2" key="$3"
+  [[ -n "$key" && -n "$value" ]] || return 0
+  adaptive history feedback "$verdict" --context "$key" --value "$value" >/dev/null 2>&1 &!
 }
 
 # ---- typing -----------------------------------------------------------------
@@ -272,6 +286,7 @@ adaptive-accept() {
     if [[ -z "$RBUFFER" && "$value" != */ && "$value" != *= && "$value" != *: ]]; then
       completed+=' '
     fi
+    _adaptive_send_feedback accept "$value" "$ADAPTIVE_CONTEXT_KEY"
     _adaptive_reset
     LBUFFER="$completed"
     _adaptive_schedule
@@ -286,6 +301,7 @@ adaptive-accept() {
     if [[ -z "$RBUFFER" && "$value" != */ && "$value" != *= && "$value" != *: ]]; then
       completed+=' '
     fi
+    _adaptive_send_feedback accept "$value" "$ADAPTIVE_CONTEXT_KEY"
     _adaptive_reset
     LBUFFER="$completed"
     _adaptive_schedule
@@ -337,6 +353,9 @@ adaptive-dismiss() {
     _adaptive_close_selector
     zle -R
   elif _adaptive_active; then
+    # Explicitly throwing away a visible suggestion is a negative vote for
+    # that exact continuation at this position.
+    _adaptive_send_feedback reject "${ADAPTIVE_VALUES[ADAPTIVE_INDEX]}" "$ADAPTIVE_CONTEXT_KEY"
     _adaptive_reset
     zle -R
   else
@@ -347,10 +366,38 @@ adaptive-dismiss() {
 adaptive-up-line() { _adaptive_reset; zle .up-line-or-history }
 adaptive-down-line() { _adaptive_reset; zle .down-line-or-history }
 
-adaptive-line-init() { _adaptive_reset }
+# Every fresh edit buffer starts predicting: on an empty prompt the engine
+# answers with the command this user most likely runs here, next, after the
+# previous line -- before a single key is pressed. The engine only ever
+# collapses to one candidate when its learned model is confident, so this
+# stays quiet rather than noisy.
+adaptive-line-init() {
+  _adaptive_reset
+  if [[ -z "$BUFFER" && "$ADAPTIVE_GHOST_TEXT" == 1 ]] && (( CURSOR == 0 )); then
+    _adaptive_schedule
+  fi
+}
 adaptive-line-finish() { _adaptive_reset }
 
-_adaptive_history_hook() { adaptive history record -- "${1%$'\n'}" >/dev/null 2>&1 &!; return 0 }
+# Records executed lines into the usage profile (frequency, transitions,
+# directory affinity, command sequences) and remembers the line as context
+# for the next prediction. The engine sanitizes secrets before anything is
+# written to disk.
+_adaptive_history_hook() {
+  local line="${1%$'\n'}"
+  adaptive history record --cwd "$PWD" --prev "${ADAPTIVE_PREV_CMD}" -- "$line" >/dev/null 2>&1 &!
+  ADAPTIVE_PREV_CMD="$line"
+  return 0
+}
+
+# One-time bootstrap: fold the existing shell history into the usage profile
+# so day-one predictions reflect months of habits. Fire-and-forget; the CLI
+# skips repeats via its own marker file.
+_adaptive_maybe_import() {
+  [[ -n "$HISTFILE" && -r "$HISTFILE" ]] || return 0
+  adaptive history import >/dev/null 2>&1 &!
+}
+_adaptive_maybe_import
 
 # ---- widget registration -----------------------------------------------------
 

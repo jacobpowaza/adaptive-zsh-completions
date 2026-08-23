@@ -17,6 +17,16 @@ pub struct CompletionConfig {
     pub history: bool,
     pub online_docs: bool,
     pub fuzzy: bool,
+    /// Predict the next token proactively at untyped positions (after a
+    /// trailing space, and on an empty prompt) instead of waiting for a
+    /// typed prefix.
+    pub predictive: bool,
+    /// Complete to entire remembered command lines (`c` ->
+    /// `claude --dangerously-skip-permissions`), not just single tokens.
+    pub chain_prediction: bool,
+    /// Half-life in days for recency weighting: recent repetition outweighs
+    /// old habits without erasing them from memory.
+    pub half_life_days: f64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -47,6 +57,9 @@ impl Default for CompletionConfig {
             history: true,
             online_docs: false,
             fuzzy: true,
+            predictive: true,
+            chain_prediction: true,
+            half_life_days: 21.0,
         }
     }
 }

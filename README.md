@@ -59,6 +59,9 @@ The uninstaller backs up `.zshrc`, removes only Adaptive's managed block and bin
 - SSH aliases from `~/.ssh/config` and non-hashed `known_hosts` entries
 - Docker container names for `exec` and `logs`, when Docker is responsive
 - Sanitized local history as a fallback and ranking signal
+- Predicted next tokens before you type them: `brew ` suggests `install`, `docker compose ` suggests `up`, `git ` suggests `status` inside a repository and `clone` outside one
+
+Ranking asks what you are most likely to type next, not which strings match what you typed. It combines position validity, how commonly a token is used there by anyone, and your own frequency and recency — so subcommands come before flags at a subcommand position, common defaults win on a fresh install, and your habits take over once you have them. The global half is data, not special cases: see [usage priors](docs/configuration.md#usage-priors) to extend it for your own tools.
 
 For example:
 

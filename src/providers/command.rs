@@ -28,30 +28,11 @@ impl Provider for PathCommandProvider {
             .iter()
             .filter(|name| name.starts_with(prefix.as_str()))
             .take(200)
-            .map(|name| {
-                let mut cand = Candidate::new(name.clone(), "command on PATH", Source::Command);
-                cand.confidence = common_bias(name);
-                cand
-            })
+            // Everyday tools surfacing above obscure PATH entries on day one is
+            // the engine's prior pass (`crate::priors`), not this provider's
+            // business: it reports what is installed.
+            .map(|name| Candidate::new(name.clone(), "command on PATH", Source::Command))
             .collect())
-    }
-}
-
-fn common_bias(name: &str) -> f64 {
-    // A tiny nudge for everyday tools so they surface first on day one, before
-    // any personal usage history exists. Ordered roughly by how often each
-    // tool actually gets reached for -- earlier entries win ties against
-    // later ones (e.g. "git" outranks "gh"). Not an exhaustive command
-    // database.
-    const COMMON: &[&str] = &[
-        "git", "cd", "ls", "npm", "docker", "cargo", "python3", "ssh", "vim", "code",
-        "curl", "brew", "node", "grep", "make", "go", "kubectl", "cat", "gh", "pnpm",
-        "yarn", "rustc", "wget", "claude", "ffmpeg", "man", "less", "find", "sed", "awk", "tar",
-    ];
-    let base = Source::Command.base_confidence();
-    match COMMON.iter().position(|&candidate| candidate == name) {
-        Some(index) => base + 0.08 - (index as f64 * 0.001),
-        None => base,
     }
 }
 

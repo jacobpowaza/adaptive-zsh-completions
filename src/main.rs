@@ -4,12 +4,12 @@ use adaptive_completion::{
     config::Config,
     discovery::{Discoverer, schema_namespace},
     engine::Engine,
-    history::HistoryDb,
+    history::{self, FeedbackKind, HistoryDb},
     model::QueryResponse,
 };
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use std::{env, path::PathBuf, process::ExitCode, time::Duration};
+use std::{env, fs, io::BufRead, path::PathBuf, process::ExitCode, time::Duration};
 
 #[derive(Parser)]
 #[command(
@@ -63,6 +63,9 @@ struct QueryArgs {
     cursor: Option<usize>,
     #[arg(long)]
     cwd: Option<PathBuf>,
+    /// The previously executed command line; feeds sequence prediction.
+    #[arg(long)]
+    prev: Option<String>,
     #[arg(long)]
     offline: bool,
     #[arg(long)]
@@ -89,9 +92,37 @@ enum HistoryCommand {
     Disable,
     Enable,
     Record {
+        /// Working directory the command ran in (directory affinity).
+        #[arg(long)]
+        cwd: Option<String>,
+        /// Previously executed line (sequence learning).
+        #[arg(long)]
+        prev: Option<String>,
         #[arg(last = true)]
         command: Vec<String>,
     },
+    /// Record explicit accept/reject feedback for a suggestion shown at a
+    /// query context (the engine echoes `context_key` with each response).
+    Feedback {
+        #[arg(value_enum)]
+        kind: FeedbackKindArg,
+        #[arg(long)]
+        context: String,
+        #[arg(long)]
+        value: String,
+    },
+    /// Backfill the usage profile from a shell history file (default
+    /// $HISTFILE). Runs once unless --force is given.
+    Import {
+        file: Option<PathBuf>,
+        #[arg(long)]
+        force: bool,
+    },
+}
+#[derive(Clone, ValueEnum)]
+enum FeedbackKindArg {
+    Accept,
+    Reject,
 }
 fn main() -> ExitCode {
     match run() {
@@ -107,7 +138,10 @@ fn run() -> Result<()> {
     match cli.command {
         Command::Init { shell: Shell::Zsh } => {
             let config = Config::load()?;
-            println!(": ${{ADAPTIVE_GHOST_TEXT:={}}}", u8::from(config.ui.ghost_text));
+            println!(
+                ": ${{ADAPTIVE_GHOST_TEXT:={}}}",
+                u8::from(config.ui.ghost_text)
+            );
             print!("{}", include_str!("../shell/adaptive.zsh"));
         }
         Command::Init { shell } => {
@@ -129,9 +163,9 @@ fn run() -> Result<()> {
                 .nth(cursor_chars)
                 .map_or(q.buffer.len(), |(index, _)| index);
             let response = if q.list {
-                engine.list(&q.buffer, cursor_bytes, &cwd, q.offline)?
+                engine.list(&q.buffer, cursor_bytes, &cwd, q.offline, q.prev.as_deref())?
             } else {
-                engine.query(&q.buffer, cursor_bytes, &cwd, q.offline)?
+                engine.query(&q.buffer, cursor_bytes, &cwd, q.offline, q.prev.as_deref())?
             };
             match q.format {
                 OutputFormat::Json => println!("{}", serde_json::to_string(&response)?),
@@ -168,7 +202,13 @@ fn run() -> Result<()> {
     Ok(())
 }
 fn print_zsh(r: &QueryResponse) {
-    println!("{}\t{}\t{}", r.request_id, r.prefix_len, r.candidates.len());
+    println!(
+        "{}\t{}\t{}\t{}",
+        r.request_id,
+        r.prefix_len,
+        r.candidates.len(),
+        clean(&r.context_key)
+    );
     for c in &r.candidates {
         println!(
             "{}\t{}\t{}\t{}",
@@ -220,14 +260,22 @@ fn cache_command(c: CacheCommand) -> Result<()> {
 fn history_command(c: HistoryCommand) -> Result<()> {
     let mut h = HistoryDb::load()?;
     match c {
-        HistoryCommand::Status => println!(
-            "History: {}\nPatterns: {}\nStorage: local only",
-            if h.enabled { "enabled" } else { "disabled" },
-            h.patterns.len()
-        ),
+        HistoryCommand::Status => {
+            println!(
+                "History: {}\nPatterns: {}\nTransitions: {} command paths\nSequences: {} previous commands\nDirectories: {}\nFeedback contexts: {} accepted / {} rejected\nStorage: local only",
+                if h.enabled { "enabled" } else { "disabled" },
+                h.patterns.len(),
+                h.transitions.len(),
+                h.sequences.len(),
+                h.dirs.len(),
+                h.accepted.len(),
+                h.rejected.len()
+            );
+        }
         HistoryCommand::Clear => {
             h.clear();
             h.save()?;
+            let _ = fs::remove_file(history::import_marker_path());
             println!("History cleared")
         }
         HistoryCommand::Disable => {
@@ -240,12 +288,53 @@ fn history_command(c: HistoryCommand) -> Result<()> {
             h.save()?;
             println!("History enabled")
         }
-        HistoryCommand::Record { command } => {
-            if h.record(&command.join(" ")) {
+        HistoryCommand::Record { cwd, prev, command } => {
+            if h.record(&command.join(" "), cwd.as_deref(), prev.as_deref()) {
+                h.prune();
                 h.save()?
             }
         }
+        HistoryCommand::Feedback {
+            kind,
+            context,
+            value,
+        } => {
+            let kind = match kind {
+                FeedbackKindArg::Accept => FeedbackKind::Accept,
+                FeedbackKindArg::Reject => FeedbackKind::Reject,
+            };
+            if h.feedback(kind, &context, &value) {
+                h.prune();
+                h.save()?
+            }
+        }
+        HistoryCommand::Import { file, force } => history_import(h, file, force)?,
     }
+    Ok(())
+}
+
+fn history_import(mut h: HistoryDb, file: Option<PathBuf>, force: bool) -> Result<()> {
+    let marker = history::import_marker_path();
+    if !force && marker.exists() {
+        println!("Already imported (use --force to re-import)");
+        return Ok(());
+    }
+    let path = file
+        .or_else(|| env::var_os("HISTFILE").map(PathBuf::from))
+        .context("no history file given and $HISTFILE is not set")?;
+    let input =
+        fs::File::open(&path).with_context(|| format!("could not read {}", path.display()))?;
+    let imported = h.import_lines(
+        std::io::BufReader::new(input)
+            .lines()
+            .map_while(std::result::Result::ok),
+    );
+    h.prune();
+    h.save()?;
+    if !marker.exists() && fs::write(&marker, "{}").is_err() {
+        // Marker is best-effort; a failed write only risks double import.
+    }
+    println!("Imported {imported} lines from {}", path.display());
     Ok(())
 }
 fn doctor() -> Result<()> {

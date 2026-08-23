@@ -1,0 +1,136 @@
+# Global usage priors: what people actually reach for, before any personal
+# history exists to say otherwise. Every list is ordered most-common first;
+# position is the only signal (no weights to hand-tune), and personal usage
+# always outranks these once it exists.
+#
+# Users can extend or override any table from ~/.config/adaptive/priors.toml
+# (see docs/configuration.md). A user list replaces the built-in list for that
+# key, so an entry only has to be named once.
+
+# Bare command names, for the first token on the line.
+commands = [
+  "git", "cd", "ls", "cat", "npm", "docker", "cargo", "python3", "python",
+  "ssh", "code", "vim", "curl", "brew", "node", "grep", "make", "go",
+  "kubectl", "gh", "pnpm", "yarn", "bun", "rg", "jq", "man", "less", "find",
+  "tar", "sed", "awk", "open", "which", "ps", "kill", "mkdir", "cp", "mv",
+  "rm", "touch", "chmod", "df", "du", "ping", "dig", "tmux", "sudo", "claude",
+  "pip3", "pip", "uv", "poetry", "ruby", "bundle", "rails", "java", "mvn",
+  "gradle", "dotnet", "swift", "flutter", "dart", "terraform", "ansible",
+  "aws", "gcloud", "az", "psql", "redis-cli", "systemctl", "journalctl",
+  "apt", "ffmpeg", "rsync", "wget", "rustup", "deno",
+]
+
+# Second (and deeper) tokens. Keys are the full command path, space separated,
+# so nested tables like "docker compose" or "gh pr" work the same way.
+[subcommands]
+git = [
+  "clone", "status", "add", "commit", "push", "pull", "checkout", "switch",
+  "branch", "log", "diff", "fetch", "merge", "rebase", "stash", "restore",
+  "remote", "init", "reset", "show", "tag", "cherry-pick", "worktree",
+  "submodule", "blame", "revert", "clean", "bisect",
+]
+"git stash" = ["push", "pop", "list", "apply", "show", "drop", "clear"]
+"git remote" = ["add", "remove", "set-url", "rename", "show", "prune"]
+"git submodule" = ["update", "add", "init", "status", "sync", "foreach"]
+"git worktree" = ["add", "list", "remove", "prune"]
+
+brew = [
+  "install", "search", "info", "update", "upgrade", "uninstall", "list",
+  "services", "doctor", "cleanup", "outdated", "tap", "link", "unlink",
+  "pin", "reinstall", "deps", "config",
+]
+"brew services" = ["start", "stop", "restart", "list", "run"]
+
+npm = [
+  "install", "run", "start", "test", "ci", "init", "update", "publish",
+  "uninstall", "audit", "outdated", "link", "exec", "pack", "version",
+]
+pnpm = ["install", "add", "run", "start", "test", "build", "remove", "update", "dlx", "exec"]
+yarn = ["install", "add", "run", "start", "test", "build", "remove", "upgrade", "dlx"]
+bun = ["install", "run", "add", "test", "build", "remove", "x", "create", "init"]
+
+docker = [
+  "run", "ps", "build", "exec", "compose", "logs", "images", "pull", "stop",
+  "start", "rm", "rmi", "push", "restart", "inspect", "cp", "network",
+  "volume", "system", "login",
+]
+"docker compose" = ["up", "down", "ps", "logs", "build", "restart", "exec", "pull", "stop", "start"]
+"docker container" = ["ls", "run", "exec", "logs", "stop", "rm", "start", "inspect"]
+"docker image" = ["ls", "build", "pull", "push", "rm", "prune", "inspect"]
+"docker network" = ["ls", "create", "inspect", "rm", "connect", "prune"]
+"docker volume" = ["ls", "create", "inspect", "rm", "prune"]
+"docker system" = ["prune", "df", "info", "events"]
+
+kubectl = [
+  "get", "describe", "apply", "logs", "exec", "delete", "create", "rollout",
+  "port-forward", "edit", "scale", "config", "top", "explain", "diff",
+  "cp", "patch", "label", "annotate",
+]
+"kubectl rollout" = ["status", "restart", "history", "undo", "pause", "resume"]
+"kubectl config" = ["get-contexts", "use-context", "current-context", "set-context", "view"]
+
+cargo = [
+  "build", "run", "test", "check", "add", "clippy", "fmt", "new", "update",
+  "install", "publish", "clean", "bench", "doc", "tree", "remove", "init",
+]
+
+go = ["run", "build", "test", "get", "mod", "install", "fmt", "vet", "generate", "work"]
+"go mod" = ["tidy", "download", "init", "vendor", "why", "graph"]
+
+gh = [
+  "pr", "repo", "issue", "run", "auth", "release", "workflow", "browse",
+  "clone", "gist", "api", "codespace", "search", "status", "alias", "config",
+  "secret", "cache", "label", "project", "ruleset", "org",
+]
+"gh pr" = ["create", "checkout", "list", "view", "status", "merge", "diff", "review", "close", "ready", "comment"]
+"gh repo" = ["clone", "view", "create", "list", "fork", "sync", "rename", "delete", "set-default"]
+"gh issue" = ["list", "create", "view", "close", "comment", "edit", "reopen", "status"]
+"gh run" = ["list", "view", "watch", "rerun", "download", "cancel"]
+"gh workflow" = ["list", "view", "run", "enable", "disable"]
+"gh auth" = ["login", "status", "logout", "refresh", "token", "setup-git"]
+"gh release" = ["list", "create", "view", "download", "upload", "delete"]
+
+pip = ["install", "uninstall", "list", "show", "freeze", "download", "check"]
+pip3 = ["install", "uninstall", "list", "show", "freeze", "download", "check"]
+uv = ["run", "add", "sync", "pip", "venv", "init", "remove", "lock", "tool", "python"]
+poetry = ["install", "add", "run", "update", "remove", "shell", "build", "publish", "lock"]
+
+rustup = ["update", "show", "toolchain", "component", "target", "default", "override"]
+deno = ["run", "test", "task", "add", "fmt", "lint", "check", "compile", "install"]
+dotnet = ["run", "build", "test", "add", "restore", "publish", "new", "watch", "clean"]
+flutter = ["run", "build", "pub", "test", "doctor", "clean", "devices", "create", "analyze"]
+dart = ["run", "pub", "test", "analyze", "format", "compile", "create", "fix"]
+
+terraform = ["plan", "apply", "init", "destroy", "fmt", "validate", "state", "show", "output", "import"]
+"terraform state" = ["list", "show", "mv", "rm", "pull", "push"]
+
+aws = ["s3", "ec2", "sts", "logs", "iam", "lambda", "ecs", "ssm", "cloudformation", "configure"]
+"aws s3" = ["ls", "cp", "sync", "rm", "mb", "mv"]
+gcloud = ["auth", "config", "compute", "container", "projects", "run", "storage", "iam", "logging"]
+az = ["login", "account", "group", "vm", "webapp", "storage", "aks", "acr", "keyvault"]
+
+systemctl = ["status", "start", "stop", "restart", "enable", "disable", "reload", "list-units", "daemon-reload"]
+apt = ["install", "update", "upgrade", "search", "remove", "show", "list", "autoremove"]
+"apt-get" = ["install", "update", "upgrade", "remove", "purge", "autoremove", "dist-upgrade"]
+tmux = ["new", "attach", "ls", "kill-session", "new-session", "detach", "rename-session"]
+
+# Applied instead of the base list when the working directory is inside a Git
+# work tree: cloning is what you do to get one, not what you do inside one.
+[in_git_repo]
+git = [
+  "status", "add", "commit", "push", "pull", "diff", "log", "checkout",
+  "switch", "branch", "fetch", "stash", "rebase", "merge", "restore",
+  "reset", "show", "remote", "tag", "cherry-pick", "revert", "worktree",
+  "submodule", "blame", "clean", "bisect", "clone", "init",
+]
+
+# Applied instead of the base list when a package.json is in scope: the deps
+# are usually installed by then, and scripts are the daily verb.
+[in_node_project]
+npm = [
+  "run", "install", "test", "start", "ci", "update", "publish", "uninstall",
+  "audit", "outdated", "link", "exec", "pack", "version", "init",
+]
+pnpm = ["run", "install", "add", "test", "build", "start", "remove", "update", "dlx", "exec"]
+yarn = ["run", "install", "add", "test", "build", "start", "remove", "upgrade", "dlx"]
+bun = ["run", "install", "add", "test", "build", "remove", "x", "create", "init"]

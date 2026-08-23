@@ -7,21 +7,52 @@ pub struct Candidate {
     pub description: String,
     pub source: Source,
     pub confidence: f64,
+    /// What this token *is* at this position. Ranking needs it to answer
+    /// "what would someone type here" rather than "what strings match": a
+    /// subcommand slot wants subcommands first and flags after, whatever the
+    /// alphabet says.
+    #[serde(default)]
+    pub kind: CandidateKind,
+    /// How commonly this token is used here by anyone, in 0.0..=1.0. See
+    /// `crate::priors`; 0.0 simply means "no global opinion".
+    #[serde(default)]
+    pub prior: f64,
     #[serde(default)]
     pub score: f64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateKind {
+    /// An argument value: a path, a branch, a container, a script name.
+    #[default]
+    Value,
+    Subcommand,
+    Flag,
 }
 
 impl Candidate {
     pub fn new(value: impl Into<String>, description: impl Into<String>, source: Source) -> Self {
         let value = value.into();
+        let kind = if value.starts_with('-') {
+            CandidateKind::Flag
+        } else {
+            CandidateKind::Value
+        };
         Self {
             display: value.clone(),
             value,
             description: description.into(),
             confidence: source.base_confidence(),
+            kind,
+            prior: 0.0,
             score: 0.0,
             source,
         }
+    }
+    pub fn with_kind(mut self, kind: CandidateKind) -> Self {
+        self.kind = kind;
+        self
     }
 }
 
@@ -34,6 +65,9 @@ pub enum Source {
     OfficialDocs,
     Filesystem,
     Command,
+    /// A well-known continuation from the global prior table, offered when
+    /// discovery could not read the tool's own metadata (see `crate::priors`).
+    Prior,
     History,
 }
 
@@ -46,6 +80,10 @@ impl Source {
             Self::LocalHelp => 0.88,
             Self::Filesystem => 0.90,
             Self::Command => 0.75,
+            // Curated metadata about a real CLI, on a par with that CLI's own
+            // help text -- just a notch below it, so a name we actually read
+            // out of the tool wins a tie against a name we only expected.
+            Self::Prior => 0.86,
             Self::History => 0.55,
         }
     }
@@ -96,4 +134,10 @@ pub struct QueryResponse {
     pub prefix_len: usize,
     pub candidates: Vec<Candidate>,
     pub cache_only: bool,
+    /// Identifies the completion position this response describes, so
+    /// frontends can send accept/reject feedback back to the exact same
+    /// context without re-deriving engine internals. Empty only for
+    /// degenerate positions.
+    #[serde(default)]
+    pub context_key: String,
 }
