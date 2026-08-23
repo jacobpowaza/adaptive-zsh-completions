@@ -4,6 +4,17 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-23
+
+### Added
+
+- Shift-TAB (`ADAPTIVE_BROWSE_KEY`) as a dedicated browse gesture: from any state, including while an inline ghost suggestion is showing, it lists every candidate with the predicted pick pre-highlighted. Previously the candidate list was only reachable when no ghost was visible, so proactive predictions made Tab feel like autocorrect for anyone looking for alternatives.
+
+### Fixed
+
+- The installer's `ADAPTIVE_MENU_NEXT_KEY` customization now reaches the frontend, which was reading a different variable name and silently ignoring it.
+- README and configuration docs no longer reference removed knobs (`menu`, `enter_accepts_menu`, `ADAPTIVE_ENTER_ACCEPTS_MENU`) and describe Tab/Shift-TAB behavior as shipped.
+
 ## [0.2.0] - 2026-08-23
 
 ### Added
@@ -66,3 +77,4 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 [0.1.1]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.1.1
 [0.1.2]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.1.2
 [0.2.0]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.2.0
+[0.2.1]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.2.1

@@ -8,10 +8,10 @@ $ git clone https://github.com/jacobpowaza/r
   jacobpowaza/relay-plugins.git  Relay plugins
 ```
 
-Adaptive discovers what a command accepts, resolves what the current argument means, and ranks useful values from local context. Its best recommendation appears as inline ghost text. Tab reveals the other relevant values in a compact, shell-style list.
+Adaptive discovers what a command accepts, resolves what the current argument means, and ranks useful values from local context and learned habits. Its best recommendation appears as inline ghost text; Tab accepts it and Shift-TAB lists every candidate.
 
 > [!NOTE]
-> v0.1 ships a complete Zsh frontend. The protocol and core are shell-independent; Bash and Fish frontends are planned.
+> Adaptive ships a complete Zsh frontend. The protocol and core are shell-independent; Bash and Fish frontends are planned.
 
 ## Install
 
@@ -58,7 +58,7 @@ The uninstaller backs up `.zshrc`, removes only Adaptive's managed block and bin
 - npm, pnpm, and Yarn scripts from the nearest `package.json`
 - SSH aliases from `~/.ssh/config` and non-hashed `known_hosts` entries
 - Docker container names for `exec` and `logs`, when Docker is responsive
-- Sanitized local history as a fallback and ranking signal
+- Sanitized local usage memory that personalizes ranking and outranks global defaults once you have habits
 - Predicted next tokens before you type them: `brew ` suggests `install`, `docker compose ` suggests `up`, `git ` suggests `status` inside a repository and `clone` outside one
 
 Ranking asks what you are most likely to type next, not which strings match what you typed. It combines position validity, how commonly a token is used there by anyone, and your own frequency and recency — so subcommands come before flags at a subcommand position, common defaults win on a fresh install, and your habits take over once you have them. The global half is data, not special cases: see [usage priors](docs/configuration.md#usage-priors) to extend it for your own tools.
@@ -77,11 +77,11 @@ $ git checkout fea
   feature/completion-engine
 ```
 
-The demo image is intentionally not fabricated; a terminal recording will be added after the first tagged release.
+A terminal recording will replace these static examples.
 
 ## How it differs
 
-`zsh-autosuggestions` predicts from history. Adaptive first discovers command structure and contextual providers, then uses sanitized history only as fallback/personalization.
+`zsh-autosuggestions` predicts from raw history lines. Adaptive discovers command structure and contextual values, then ranks against a structured learned profile of your habits — per-position transitions, command sequences, directory affinities, accept/reject feedback — blended with global usage priors.
 
 Static completion repositories encode each CLI as a large shell function. Adaptive stores a generic command schema and keeps command-specific code limited to small adapters for dynamic values that cannot be inferred from help.
 
@@ -92,11 +92,12 @@ Claude, Codex, and other installed CLIs are not encoded as special cases. Adapti
 ## Zsh controls
 
 - The highest-ranked command, flag, branch, directory, script, or repository recommendation stays inline in dark gray.
-- Tab reveals related commands, flags, or current-directory entries without immediately replacing a partial token. On an exact token such as `git clone`, it advances to the next argument while keeping the sibling-command list visible.
+- Tab accepts the inline ghost suggestion as a whole (a chain prediction completes the entire remembered line). When no ghost is visible it reveals related commands, flags, or current-directory entries instead.
+- Shift-TAB is the dedicated browse key: from any state -- including while a ghost is showing -- it lists every candidate with the predicted pick pre-highlighted; Tab then accepts the highlighted entry and arrows move the selection. Set `ADAPTIVE_BROWSE_KEY` before initialization to change it.
 - Repository candidates appear automatically after a recognized forge owner path such as `https://github.com/example/`.
-- A second Tab accepts the highest-ranked visible candidate. Right arrow cycles visible candidates; Up/Down work too. Set `ADAPTIVE_ACCEPT_KEY` or `ADAPTIVE_MENU_NEXT_KEY` before initialization to change those keys.
+- Right arrow cycles visible candidates; Up/Down work too. Set `ADAPTIVE_ACCEPT_KEY` or `ADAPTIVE_MENU_NEXT_KEY` before initialization to change those keys.
 - Set `ADAPTIVE_GHOST_STYLE` to any ZLE highlight style before initialization to change the inline color.
-- Enter runs the command by default. Set `ADAPTIVE_ENTER_ACCEPTS_MENU=1` to make Enter accept an open menu.
+- Enter always runs the line exactly as typed; accepting or dismissing suggestions never executes anything.
 - Outside an Adaptive suggestion/menu, the widgets delegate to normal ZLE behavior. `bindkey -e` is supported.
 
 ## CLI
@@ -105,6 +106,7 @@ Claude, Codex, and other installed CLIs are not encoded as special cases. Adapti
 adaptive init zsh
 adaptive doctor
 adaptive query --buffer 'git clone' --list
+adaptive query --buffer '' --prev 'make test'
 adaptive discover git
 adaptive discover docker compose
 adaptive inspect git
@@ -113,19 +115,21 @@ adaptive cache refresh git
 adaptive cache prune
 adaptive cache clear
 adaptive history status
+adaptive history import [file]
+adaptive history feedback accept --context KEY --value VALUE
 adaptive history clear
 adaptive history disable
 adaptive version
 ```
 
-`adaptive query` is the stable frontend protocol. It emits JSON by default and a sanitized tab-separated stream for the Zsh integration. The additive `--list` flag keeps related alternatives for an explicit Tab listing while ordinary queries remain prefix-focused.
+`adaptive query` is the stable frontend protocol. It emits JSON by default and a sanitized tab-separated stream for the Zsh integration. The additive `--list` flag keeps related alternatives for an explicit listing request (Shift-TAB) while ordinary queries remain prefix-focused. `--prev LINE` feeds command-sequence learning so an empty prompt can predict what usually follows the last command.
 
 ## Architecture
 
 ```text
 shell buffer
   parser -> resolver -> discovery/cache -> contextual providers
-                                     \-> history fallback
+                                     \-> learned profile + global priors
                 candidates -> normalizer/ranker -> shell protocol
                                                    |- ghost text
                                                    `- candidate list
@@ -150,12 +154,13 @@ Adaptive works without a config file. It uses the platform config directory: `~/
 history = true
 online_docs = false
 fuzzy = true
+predictive = true        # ghost the next token at untyped positions
+chain_prediction = true  # complete to whole remembered command lines
+half_life_days = 21.0    # recency decay for learned habits
 
 [ui]
 ghost_text = true
-menu = true
 max_candidates = 8
-enter_accepts_menu = false
 
 [providers.forge]
 enabled = true

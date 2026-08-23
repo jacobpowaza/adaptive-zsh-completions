@@ -449,6 +449,23 @@ ADAPTIVE_PREFIX_LEN=0
 ADAPTIVE_VALUES=(only.git)
 ! _adaptive_auto_selector_after_slash
 (( ADAPTIVE_SELECTOR_ACTIVE == 0 ))
+# Shift-TAB browses from any state -- a visible ghost never blocks the
+# candidate list the way accept-first TAB can. The fast path reuses the
+# ghost's own ranked candidates with the ghosted pick pre-highlighted.
+bindkey '^[[Z' | grep -q adaptive-browse
+zle -l | grep -q adaptive-browse
+BUFFER='grep '
+CURSOR=$#BUFFER
+ADAPTIVE_PREFIX_LEN=0
+ADAPTIVE_VALUES=(--recursive --color)
+ADAPTIVE_INDEX=2
+_adaptive_render_current
+[[ "$POSTDISPLAY" = '--color' ]]
+_adaptive_open_selector_from_ghost
+(( ADAPTIVE_SELECTOR_ACTIVE == 1 ))
+(( ${{#ADAPTIVE_LIST_VALUES}} == 2 ))
+(( ADAPTIVE_LIST_INDEX == 2 ))
+[[ "$POSTDISPLAY" == $'\n--recursive  --color' ]]
 # The zsh protocol header now carries the context key used for feedback.
 BUFFER='git c'
 CURSOR=$#BUFFER

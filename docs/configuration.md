@@ -19,9 +19,7 @@ half_life_days = 21.0
 
 [ui]
 ghost_text = true
-menu = true
 max_candidates = 8
-enter_accepts_menu = false
 
 [providers.forge]
 enabled = true
@@ -41,12 +39,12 @@ Zsh-specific environment settings must be assigned before the managed initializa
 export ADAPTIVE_ACCEPT_KEY='^[f'
 export ADAPTIVE_GHOST_STYLE='fg=245'
 export ADAPTIVE_MENU_NEXT_KEY='^[[C'
-export ADAPTIVE_ENTER_ACCEPTS_MENU=1
+export ADAPTIVE_BROWSE_KEY='^[[Z'
 ```
 
-Adaptive renders the highest-ranked recommendation inline. Tab shows an unnumbered, shell-style list of related commands, flags, or filesystem entries; recognized forge repository lists can appear automatically.
+Adaptive renders the highest-ranked recommendation inline. Tab accepts that suggestion when one is showing and otherwise lists related commands, flags, or filesystem entries; recognized forge repository lists can appear automatically. Shift-TAB always opens the list -- even while an inline suggestion is visible -- so browsing candidates never requires dismissing the ghost first.
 
-The installer also accepts `ADAPTIVE_ACCEPT_KEY`, `ADAPTIVE_MENU_NEXT_KEY`, and `ADAPTIVE_GHOST_STYLE` and writes their quoted values into its managed block.
+The installer also accepts `ADAPTIVE_ACCEPT_KEY`, `ADAPTIVE_MENU_NEXT_KEY`, `ADAPTIVE_BROWSE_KEY`, and `ADAPTIVE_GHOST_STYLE` and writes their quoted values into its managed block.
 
 ## Usage priors
 

@@ -6,7 +6,9 @@
 #   GHOST           the engine's predicted continuation -- of a typed prefix
 #                   or, proactively, of an untyped position (trailing space,
 #                   fresh prompt) -- shown dim; arrows cycle, ESC rejects
-#   OPTION_SELECTOR explicit candidate browser opened by TAB with no ghost active
+#   OPTION_SELECTOR explicit candidate browser opened by Shift-TAB from any
+#                   state (a visible ghost never blocks browsing), or by TAB
+#                   with nothing to accept
 #   (JUST_ACCEPTED is simply IDLE again: acceptance never carries forward
 #    permission to keep auto-suggesting without new user intent)
 [[ -o interactive ]] || return 0
@@ -16,8 +18,9 @@
 : ${ADAPTIVE_SELECTOR_STYLE:=fg=245}
 : ${ADAPTIVE_SELECTOR_SELECTED_STYLE:=standout}
 : ${ADAPTIVE_ACCEPT_KEY:=^I}
-: ${ADAPTIVE_CYCLE_NEXT_KEY:=^[[C}
-: ${ADAPTIVE_CYCLE_PREV_KEY:=^[[D}
+: ${ADAPTIVE_BROWSE_KEY:=^[[Z}
+: ${ADAPTIVE_MENU_NEXT_KEY:=^[[C}
+: ${ADAPTIVE_MENU_PREV_KEY:=^[[D}
 : ${ADAPTIVE_DISMISS_KEY:=^[}
 
 typeset -g ADAPTIVE_QUERY_FD="" ADAPTIVE_QUERY_BUFFER="" ADAPTIVE_QUERY_CURSOR=0 ADAPTIVE_QUERY_KIND="ghost"
@@ -71,7 +74,7 @@ _adaptive_set_ghost() {
 # point of prediction ("git ", "claude ", an untouched prompt). The engine
 # collapses to exactly one candidate where it is decisive; otherwise the
 # ghost shows its best guess and arrow keys cycle alternatives, ESC dismisses
-# (a learned rejection), and TAB browses everything.
+# (a learned rejection), and Shift-TAB browses everything.
 _adaptive_render_current() {
   _adaptive_clear_ghost
   (( ${#ADAPTIVE_VALUES} )) || { _adaptive_log "render_current gate=fail reason=no_values"; return 1 }
@@ -228,6 +231,22 @@ _adaptive_auto_selector_after_slash() {
   return 0
 }
 
+# Opens the candidate browser straight from an active ghost: the ranked
+# candidates the ghost is cycling through are already in hand, so the list
+# appears instantly with the ghosted pick pre-highlighted -- no second
+# engine round-trip. Only makes sense with more than one candidate.
+_adaptive_open_selector_from_ghost() {
+  (( ${#ADAPTIVE_VALUES} > 1 )) || return 1
+  ADAPTIVE_LIST_VALUES=("${ADAPTIVE_VALUES[@]}")
+  ADAPTIVE_LIST_DISPLAYS=("${ADAPTIVE_DISPLAYS[@]}")
+  ADAPTIVE_LIST_DESCRIPTIONS=("${ADAPTIVE_DESCRIPTIONS[@]}")
+  ADAPTIVE_LIST_SOURCES=("${ADAPTIVE_SOURCES[@]}")
+  ADAPTIVE_LIST_INDEX=$ADAPTIVE_INDEX
+  ADAPTIVE_SELECTOR_ACTIVE=1
+  _adaptive_clear_ghost
+  _adaptive_render_selector
+}
+
 _adaptive_schedule() {
   _adaptive_cancel_query
   ADAPTIVE_QUERY_KIND="ghost"
@@ -309,6 +328,20 @@ adaptive-accept() {
   fi
   # No ghost, no selector: TAB explicitly asks "what can go here?" -- browse,
   # never blindly insert the top-ranked candidate.
+  _adaptive_schedule_selector
+}
+
+# Shift-TAB: the unambiguous "what can go here?" gesture. Unlike TAB -- which
+# accepts a visible ghost first -- this always browses, from any state. An
+# active ghost with several candidates opens instantly via the fast path;
+# otherwise the engine is asked for the full listing (which may know more
+# than the collapsed ghost does).
+adaptive-browse() {
+  if (( ADAPTIVE_SELECTOR_ACTIVE )); then
+    return 0
+  fi
+  _adaptive_open_selector_from_ghost && return
+  _adaptive_reset
   _adaptive_schedule_selector
 }
 
@@ -404,6 +437,7 @@ _adaptive_maybe_import
 zle -N self-insert adaptive-self-insert
 zle -N backward-delete-char adaptive-backward-delete-char
 zle -N adaptive-accept
+zle -N adaptive-browse
 zle -N adaptive-cycle-next
 zle -N adaptive-cycle-prev
 zle -N adaptive-dismiss
@@ -414,8 +448,9 @@ zle -N zle-line-finish adaptive-line-finish
 zle -N adaptive-ready _adaptive_ready
 
 bindkey "$ADAPTIVE_ACCEPT_KEY" adaptive-accept
-bindkey "$ADAPTIVE_CYCLE_NEXT_KEY" adaptive-cycle-next
-bindkey "$ADAPTIVE_CYCLE_PREV_KEY" adaptive-cycle-prev
+bindkey "$ADAPTIVE_BROWSE_KEY" adaptive-browse
+bindkey "$ADAPTIVE_MENU_NEXT_KEY" adaptive-cycle-next
+bindkey "$ADAPTIVE_MENU_PREV_KEY" adaptive-cycle-prev
 bindkey "$ADAPTIVE_DISMISS_KEY" adaptive-dismiss
 bindkey '^[[A' adaptive-up-line
 bindkey '^[[B' adaptive-down-line
