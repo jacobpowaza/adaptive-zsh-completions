@@ -4,6 +4,24 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-23
+
+### Added
+
+- Bash frontend over the same query protocol: `eval "$(adaptive init bash)"` powers Tab for every command without its own completion function, falls back to native filename completion when the engine has nothing to say, reports single-match accepts through the context key, and predicts the first word on an empty line. Requires bash >= 4; live line recording remains Zsh-only because Bash has no dependable preexec hook.
+- Real-world help fixtures (kubectl's grouped command sections, Poetry/Symfony Console listings) as parser regression tests, and a functional test harness (`tests/frontend.bash`) driving the Bash frontend end to end against shim CLIs built from captured help output.
+- README previews: a recorded ghost-text demo and a `git clone` repository-browsing screenshot replace the static-only examples.
+
+### Fixed
+
+- Symfony Console tools (Poetry, Composer, phpstan, ...) now discover their commands: their bare `--help` describes a hidden `list` command instead of listing anything, so discovery probes `list` directly when that signature is detected.
+- Invocation-shaped lines inside prose sections (Examples, Help) no longer become phantom subcommands — `poetry list` inside Poetry's help text used to surface as a bogus completion candidate.
+- `git clone ` ghosts the generic `https://github.com/` prefix at the URL slot instead of a remembered repository URL, and the slot keeps answering with the prefix after clone's own flags (`git clone --depth 1 `); a specific repository is reached by typing its owner, which re-engages repository browsing.
+
+### Changed
+
+- The global prior table is documented for what it is now — ranking and prediction data plus common subcommands for undocumented positions — after kubectl's grouped `--help` sections were verified to parse directly with captured-output tests.
+
 ## [0.2.1] - 2026-08-23
 
 ### Added

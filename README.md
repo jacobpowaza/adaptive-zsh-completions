@@ -2,16 +2,19 @@
 
 Intelligent shell completion that learns commands instead of requiring giant completion scripts.
 
+![Adaptive ghosting the next token, cycling alternatives, and completing forge repositories](docs/previews/completion-preview.gif)
+
 ```console
-$ git clone https://github.com/jacobpowaza/r
-  jacobpowaza/relay.git          Fast local relay
-  jacobpowaza/relay-plugins.git  Relay plugins
+$ git clone https://github.com/jacobpowaza/
+  jacobpowaza/NewKap.git          jacobpowaza/Relay.git  jacobpowaza/VulnClaw.git
+  jacobpowaza/continuum.git       jacobpowaza/n8n-workflows.git
+  jacobpowaza/relay-plugins.git   jacobpowaza/software-mri.git
 ```
 
 Adaptive discovers what a command accepts, resolves what the current argument means, and ranks useful values from local context and learned habits. Its best recommendation appears as inline ghost text; Tab accepts it and Shift-TAB lists every candidate.
 
 > [!NOTE]
-> Adaptive ships a complete Zsh frontend. The protocol and core are shell-independent; Bash and Fish frontends are planned.
+> Adaptive ships complete Zsh and Bash frontends over the same query protocol. The engine is shell-independent; a Fish frontend is planned.
 
 ## Install
 
@@ -65,6 +68,8 @@ Ranking asks what you are most likely to type next, not which strings match what
 
 For example:
 
+![Tab after `git clone https://github.com/jacobpowaza/` lists every repository](docs/previews/git-complete.png)
+
 ```console
 $ claude --dang
          erously-skip-permissions
@@ -76,8 +81,6 @@ $ npm run de
 $ git checkout fea
   feature/completion-engine
 ```
-
-A terminal recording will replace these static examples.
 
 ## How it differs
 
@@ -99,6 +102,22 @@ Claude, Codex, and other installed CLIs are not encoded as special cases. Adapti
 - Set `ADAPTIVE_GHOST_STYLE` to any ZLE highlight style before initialization to change the inline color.
 - Enter always runs the line exactly as typed; accepting or dismissing suggestions never executes anything.
 - Outside an Adaptive suggestion/menu, the widgets delegate to normal ZLE behavior. `bindkey -e` is supported.
+
+## Bash
+
+Bash has no inline ghost text, so Adaptive powers Tab itself: pressing Tab lists everything valid at this position — subcommands, flags, enum values, branches, scripts — and readline inserts the choice. Commands that ship their own completion functions keep them; when the engine has nothing, native filename completion takes over.
+
+Add one line to `~/.bashrc` (bash >= 4 required):
+
+```sh
+eval "$(adaptive init bash)"
+```
+
+Bootstrap the usage profile from your existing history once:
+
+```sh
+adaptive history import ~/.bash_history
+```
 
 ## CLI
 
@@ -187,7 +206,7 @@ Provider contributions implement one narrow matching/resolution interface; ranki
 
 ## Roadmap
 
-- Bash and Fish frontends over the existing query protocol
+- Fish frontend over the existing query protocol
 - More native completion adapters and structured documentation parsers
 - Workspace-aware npm/pnpm package glob expansion
 - Background refresh for stale schemas and provider caches

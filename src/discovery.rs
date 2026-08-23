@@ -43,6 +43,13 @@ impl<'a> Discoverer<'a> {
         )
         .unwrap_or_default();
         let mut schema = parse_help(command, path, &text);
+        // Symfony Console applications (poetry, composer, phpstan, ...) answer
+        // bare `--help` with the help of their hidden `list` command instead
+        // of a command table, so the probes below must still run even though
+        // flags were parsed.
+        let symfony_console = text
+            .to_ascii_lowercase()
+            .contains("display help for the given command");
         if command == "git"
             && path.is_empty()
             && let Ok(text) = run_informational(
@@ -76,6 +83,38 @@ impl<'a> Discoverer<'a> {
                 Duration::from_secs(2),
             ) {
                 schema = parse_help(command, path, &text);
+            }
+        }
+        // Symfony Console applications (poetry, composer, phpstan, ...) answer
+        // bare `--help` with the help of their hidden `list` command instead
+        // of a command table; asking them for `list` directly prints one.
+        // Accepted only when it actually yields a listing, because a bare
+        // subcommand probe is the loosest interface in this chain.
+        if schema.items.is_empty()
+            || (symfony_console
+                && !schema
+                    .items
+                    .iter()
+                    .any(|item| item.kind == ItemKind::Subcommand))
+        {
+            let mut listing = path.to_vec();
+            listing.push("list".into());
+            if let Ok(text) = run_informational(
+                executable.to_string_lossy().as_ref(),
+                listing,
+                None,
+                Duration::from_secs(2),
+            ) {
+                let parsed = parse_help(command, path, &text);
+                if parsed
+                    .items
+                    .iter()
+                    .filter(|item| item.kind == ItemKind::Subcommand)
+                    .count()
+                    >= 2
+                {
+                    schema = parsed;
+                }
             }
         }
         if schema.items.is_empty()

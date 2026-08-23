@@ -49,6 +49,9 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
     let comma_list =
         Regex::new(r"^[a-zA-Z][a-zA-Z0-9_-]*(?:,\s*[a-zA-Z][a-zA-Z0-9_-]*)*,?$").unwrap();
     let mut section = "";
+    // False inside prose sections (examples, help): invocation-shaped lines
+    // there describe usage, not available subcommands.
+    let mut extractable = true;
     let mut items = Vec::new();
     let mut usage = None;
 
@@ -107,6 +110,7 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
             "license",
             "aliases",
             "configuration",
+            "help",
         ];
         if !trimmed.is_empty() && trimmed.ends_with(':') && trimmed.len() < 100 {
             section = if NON_COMMAND_HEADINGS.contains(&heading.as_str()) {
@@ -114,6 +118,9 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
             } else {
                 "commands"
             };
+            // Prose sections (examples, help text) mention invocations like
+            // `poetry list` that must never become completion candidates.
+            extractable = !NON_COMMAND_HEADINGS.contains(&heading.as_str());
             continue;
         }
         if !trimmed.is_empty()
@@ -129,6 +136,7 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
             } else {
                 "commands"
             };
+            extractable = !NON_COMMAND_HEADINGS.contains(&heading.as_str());
             continue;
         }
 
@@ -193,7 +201,11 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
                 values: vec![],
                 description: c[2].trim().to_owned(),
             });
-        } else if section == "commands" && trimmed.contains(',') && comma_list.is_match(trimmed) {
+        } else if section == "commands"
+            && extractable
+            && trimmed.contains(',')
+            && comma_list.is_match(trimmed)
+        {
             // A wrapped, description-less list of names (npm's "All
             // commands:" block): every comma-separated word is a subcommand.
             for name in trimmed.split(',') {
@@ -203,12 +215,13 @@ pub fn parse_help(command: &str, path: &[String], text: &str) -> CommandSchema {
                 }
             }
         } else if section == "commands"
+            && extractable
             && let Some(c) = bullet.captures(trimmed)
         {
             // "- name" / "- name / alias" bullet lists (yarn's "Commands:").
             add_subcommand_if_new(&mut items, &c[1]);
         }
-        if let Some(c) = usage_line.captures(&line) {
+        if extractable && let Some(c) = usage_line.captures(&line) {
             add_subcommand_if_new(&mut items, &c[1]);
         }
         for capture in inline_flag.captures_iter(&line) {
@@ -299,5 +312,110 @@ mod tests {
     #[test]
     fn strips_terminal_escape_characters() {
         assert_eq!(strip_control("safe\u{1b}[31m\nB\u{8}BAD"), "safe\nBAD");
+    }
+
+    #[test]
+    fn parses_real_kubectl_grouped_command_sections() {
+        // Captured from kubectl v1.36: command tables live under grouped
+        // headings ("Basic Commands (Beginner):", "Deploy Commands:", ...)
+        // instead of one literal "Commands:" table.
+        let schema = parse_help(
+            "kubectl",
+            &[],
+            include_str!("../tests/fixtures/kubectl_help.txt"),
+        );
+        let names: Vec<&str> = schema
+            .items
+            .iter()
+            .filter(|i| i.kind == ItemKind::Subcommand)
+            .flat_map(|i| i.names.iter().map(String::as_str))
+            .collect();
+        for expected in [
+            "get",
+            "apply",
+            "rollout",
+            "config",
+            "port-forward",
+            "api-resources",
+            "describe",
+            "logs",
+            "scale",
+            "annotate",
+            "completion",
+        ] {
+            assert!(names.contains(&expected), "missing {expected} in {names:?}");
+        }
+        assert!(!names.iter().any(|n| n.starts_with('-')));
+    }
+
+    #[test]
+    fn parses_real_kubectl_nested_help() {
+        let rollout = parse_help(
+            "kubectl",
+            &["rollout".into()],
+            include_str!("../tests/fixtures/kubectl_rollout_help.txt"),
+        );
+        let names: Vec<&str> = rollout
+            .items
+            .iter()
+            .filter(|i| i.kind == ItemKind::Subcommand)
+            .flat_map(|i| i.names.iter().map(String::as_str))
+            .collect();
+        assert_eq!(
+            names,
+            ["history", "pause", "restart", "resume", "status", "undo"]
+        );
+
+        let config = parse_help(
+            "kubectl",
+            &["config".into()],
+            include_str!("../tests/fixtures/kubectl_config_help.txt"),
+        );
+        let names: Vec<&str> = config
+            .items
+            .iter()
+            .filter(|i| i.kind == ItemKind::Subcommand)
+            .flat_map(|i| i.names.iter().map(String::as_str))
+            .collect();
+        assert!(names.contains(&"use-context"));
+        assert!(names.contains(&"current-context"));
+        assert!(names.contains(&"set-context"));
+    }
+
+    #[test]
+    fn symfony_bare_help_has_no_command_table() {
+        // Poetry (Symfony Console): `--help` describes the hidden `list`
+        // command, which is why discovery must probe `list` itself.
+        let schema = parse_help(
+            "poetry",
+            &[],
+            include_str!("../tests/fixtures/poetry_help.txt"),
+        );
+        assert_eq!(
+            schema
+                .items
+                .iter()
+                .filter(|i| i.kind == ItemKind::Subcommand)
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn parses_symfony_list_command_table() {
+        let schema = parse_help(
+            "poetry",
+            &[],
+            include_str!("../tests/fixtures/poetry_list.txt"),
+        );
+        let names: Vec<&str> = schema
+            .items
+            .iter()
+            .filter(|i| i.kind == ItemKind::Subcommand)
+            .flat_map(|i| i.names.iter().map(String::as_str))
+            .collect();
+        for expected in ["install", "add", "build", "lock", "publish"] {
+            assert!(names.contains(&expected), "missing {expected} in {names:?}");
+        }
     }
 }

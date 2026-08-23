@@ -67,7 +67,7 @@ git = ["status", "add", "commit", "push"]
 npm = ["run", "install", "test"]
 ```
 
-A user list replaces the built-in list for that key. Entries are used three ways: they order candidates, they predict the next token before anything is typed, and they supply candidates for tools whose `--help` cannot be parsed. They never override personal history — a few real uses of `brew update` outrank the global default `brew install`.
+A user list replaces the built-in list for that key. Entries are used three ways: they order candidates, they predict the next token before anything is typed, and they supply common subcommands for positions a tool's own `--help` leaves undocumented. They never override personal history — a few real uses of `brew update` outrank the global default `brew install`.
 
 Cache defaults to the platform cache directory and history defaults to the platform local-data directory. `ADAPTIVE_CACHE_DIR` and `ADAPTIVE_DATA_DIR` are available for controlled test environments.
 

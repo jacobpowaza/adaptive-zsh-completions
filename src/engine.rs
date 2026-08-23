@@ -209,6 +209,19 @@ impl Engine {
             }
         }
 
+        // A forge prefix candidate (`https://github.com/`) at an untyped URL
+        // slot is canonical: remembered full URLs must not hijack it, no
+        // matter how often one repository was cloned. A specific repo is
+        // reached by typing its owner, which re-engages the forge provider.
+        if context.current.is_empty()
+            && candidates
+                .iter()
+                .any(|c| c.source == Source::Dynamic && c.value.ends_with('/'))
+        {
+            candidates.retain(|c| !(c.source == Source::History && c.value.contains("://")));
+            predictions.retain(|value, _| !value.contains("://"));
+        }
+
         if wants_documented_options && let Some(command) = context.command.as_deref() {
             let discoverer =
                 Discoverer::new(&self.cache, self.config.completion.online_docs && !offline);
@@ -261,11 +274,10 @@ impl Engine {
                     }
                 }
             }
-            // Well-known subcommands the tool's own `--help` never spelled out
-            // (or that we failed to read at all -- plenty of CLIs answer
-            // `--help` with prose, a pager, or an error). Filling them in from
-            // the prior table is the difference between `kubectl <TAB>`
-            // offering "get" and offering nothing.
+            // Common subcommands some tools never spell out in their own
+            // `--help` (plenty of CLIs answer it with prose, a pager, or an
+            // error). Filling them in from the prior table keeps such
+            // positions useful while discovery catches up elsewhere.
             for token in prior_tokens {
                 if !candidates.iter().any(|c| &c.value == token)
                     && !context.tokens.iter().any(|t| t == token)
