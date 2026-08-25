@@ -4,6 +4,12 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Added
+
+- Optional [carapace-bin](https://carapace-sh.github.io/carapace-bin/) integration: when carapace is on `PATH`, its exact command knowledge (subcommands, flags, enum values, positional and command-specific completions) is queried for any tool it has a completer for and merged with Adaptive's providers, learned history, priors, and help parsing. Answers are cached per position and working directory under a fingerprint of the carapace binary (path/size/mtime), the completer listing for 24 hours; a 400 ms hard timeout plus the frontend's existing off-thread queries keep completion instant, and missing, disabled, slow, or crashing carapace degrades to silence. `carapace.enabled = true` (default) in the config controls it, with `adaptive carapace status | enable | disable` toggles and a doctor line.
+- Git workflows gain repo-aware slots alongside Carapace: `git worktree add <TAB>` suggests sibling directories, branches, and existing worktrees; `git branch -d <TAB>` offers only deletable local heads (the checked-out branch excluded); `git cherry-pick <TAB>` offers recent commits by hash with subjects in the display; plain `git branch <TAB>` completes local heads.
+- The installer detects carapace and reports it; when absent it explains the optional install (`ADAPTIVE_INSTALL_CARAPACE=yes` tries Homebrew/apt/dnf/pacman/apk automatically, `ask` prompts only on interactive terminals) and always finishes successfully without it.
+
 ## [0.3.0] - 2026-08-23
 
 ### Added

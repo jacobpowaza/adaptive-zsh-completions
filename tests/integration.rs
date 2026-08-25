@@ -14,7 +14,44 @@ use tempfile::TempDir;
 use tiny_http::{Header, Response, Server};
 
 fn isolated() -> TempDir {
-    tempfile::tempdir().unwrap()
+    let temp = tempfile::tempdir().unwrap();
+    // Hermetic default: the optional carapace source stays off unless a test
+    // explicitly enables it, so results never depend on what the host
+    // happens to have installed.
+    fs::write(
+        temp.path().join("config.toml"),
+        "[carapace]\nenabled = false\n",
+    )
+    .unwrap();
+    temp
+}
+
+/// A fake `carapace` binary. `--list --names` answers from `list_names`;
+/// `<completer> export ...` prints `export_json` and counts invocations in
+/// `counter` so tests can prove when the subprocess ran.
+fn carapace_shim(dir: &std::path::Path, list_names: &str, export_json: &str) -> std::path::PathBuf {
+    let counter = dir.join("carapace-calls");
+    let shim = dir.join("carapace");
+    fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--list\" ]; then\n  printf '%s' '{list_names}'\n  exit 0\nfi\ncount=$(cat {counter} 2>/dev/null || echo 0)\necho $((count+1)) > {counter}\nprintf '%s' '{export_json}'\n",
+            counter = counter.display(),
+            list_names = list_names.replace('\'', "'\\''"),
+            export_json = export_json.replace('\'', "'\\''"),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+    shim
+}
+
+fn enable_carapace_config(temp: &TempDir) {
+    fs::write(
+        temp.path().join("config.toml"),
+        "[carapace]\nenabled = true\n",
+    )
+    .unwrap();
 }
 
 fn query(temp: &TempDir, buffer: &str, cwd: &std::path::Path) -> Value {
@@ -1178,5 +1215,458 @@ fn new_flag_prefixes_read_the_command_settings_list() {
     assert!(
         listed_values.iter().any(|v| v.starts_with("--")),
         "TAB list includes documented settings alongside dynamic ones: {listed_values:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Carapace integration: an optional external completion source. Every test
+// here drives a fake `carapace` shim on PATH so behavior is identical on
+// machines with and without the real carapace-bin installed.
+// ---------------------------------------------------------------------------
+
+const CARAPACE_LIST: &str = "git\ndeployctl\n";
+const GIT_EXPORT: &str = r#"{"values":[
+  {"value":"main","display":"main","description":"branch"},
+  {"value":"feature/engine","display":"feature/engine","description":"branch"},
+  {"value":"hotfix","display":"hotfix","description":"branch"}]}"#;
+const DEPLOYCTL_EXPORT: &str = r#"{"values":[
+  {"value":"pods","description":"resource"},
+  {"value":"services","description":"resource"}]}"#;
+
+/// `git checkout <TAB>` merges Carapace's schema answers with Adaptive's
+/// learned habits, and the habit outranks everything Carapace offers.
+#[test]
+fn carapace_answers_merge_and_learning_overrides_them() {
+    let temp = isolated();
+    enable_carapace_config(&temp);
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    carapace_shim(&bin, CARAPACE_LIST, GIT_EXPORT);
+    Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(temp.path())
+        .status()
+        .unwrap();
+    fs::write(temp.path().join("seed"), "x").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(temp.path())
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-qm",
+            "seed",
+        ])
+        .current_dir(temp.path())
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["checkout", "-qb", "feature/engine"])
+        .current_dir(temp.path())
+        .status()
+        .unwrap();
+    for _ in 0..4 {
+        record_in(&temp, None, None, &["git", "checkout", "hotfix"]);
+    }
+    // Explicit listing so the habitual ghost-collapse cannot hide the merge,
+    // with the shim dir first on PATH so carapace is actually detected.
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let output = cargo_bin_cmd!("adaptive")
+        .args(["query", "--list", "--buffer", "git checkout "])
+        .env("PATH", &path)
+        .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
+        .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
+        .env("ADAPTIVE_CONFIG", temp.path().join("config.toml"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let response: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let candidates = response["candidates"].as_array().unwrap();
+    assert!(!candidates.is_empty());
+    // The learned branch leads...
+    assert_eq!(candidates[0]["value"], "hotfix");
+    // ...while Carapace's knowledge is present in the merged list.
+    let values: Vec<_> = candidates
+        .iter()
+        .map(|c| c["value"].as_str().unwrap())
+        .collect();
+    assert!(values.contains(&"main"), "{values:?}");
+    assert!(values.contains(&"feature/engine"), "{values:?}");
+}
+
+/// Where Carapace owns the position, its schema replaces help parsing:
+/// the fake tool's `--help` is unparseable, yet exact values come through
+/// tagged with their origin.
+#[test]
+fn carapace_schema_replaces_help_parsing() {
+    let temp = isolated();
+    enable_carapace_config(&temp);
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    carapace_shim(&bin, CARAPACE_LIST, DEPLOYCTL_EXPORT);
+    let tool = bin.join("deployctl");
+    fs::write(
+        &tool,
+        "#!/bin/sh\nprintf 'deploys things, no help here\\n'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let output = cargo_bin_cmd!("adaptive")
+        .args(["query", "--list", "--buffer", "deployctl get "])
+        .env("PATH", path)
+        .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
+        .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
+        .env("ADAPTIVE_CONFIG", temp.path().join("config.toml"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let body: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let first = &body["candidates"][0];
+    assert_eq!(first["value"], "pods");
+    assert_eq!(first["source"], "carapace");
+}
+
+/// No carapace on PATH: completion works exactly as before.
+#[test]
+fn carapace_missing_leaves_completion_unchanged() {
+    let temp = isolated();
+    enable_carapace_config(&temp);
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let tool = bin.join("mysterytool");
+    fs::write(&tool, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    for _ in 0..3 {
+        record_in(&temp, None, None, &["mysterytool", "alpha"]);
+    }
+    // The controlled PATH contains only our own tool: no carapace anywhere.
+    let output = cargo_bin_cmd!("adaptive")
+        .args(["query", "--buffer", "mysterytool al"])
+        .env("PATH", bin.display().to_string())
+        .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
+        .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
+        .env("ADAPTIVE_CONFIG", temp.path().join("config.toml"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let body: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(body["candidates"][0]["value"], "alpha");
+    assert_eq!(body["candidates"][0]["source"], "history");
+}
+
+/// Disabled in config: even with carapace present it is never consulted.
+#[test]
+fn carapace_disabled_is_never_consulted() {
+    let temp = isolated(); // writes [carapace] enabled = false
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    carapace_shim(&bin, CARAPACE_LIST, GIT_EXPORT);
+    Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(temp.path())
+        .status()
+        .unwrap();
+    let response = query_with(&temp, "git checkout ", temp.path(), &[]);
+    let sources: Vec<_> = response["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["source"].as_str().unwrap_or_default())
+        .collect();
+    assert!(
+        !sources.contains(&"carapace"),
+        "disabled carapace leaked into results: {sources:?}"
+    );
+    assert!(
+        !bin.join("carapace-calls").exists(),
+        "disabled carapace still spawned"
+    );
+}
+
+/// A hung carapace cannot stall the pipeline past the query timeout; a
+/// crashing or lying carapace degrades to no extra candidates.
+#[test]
+fn slow_and_broken_carapace_never_break_completion() {
+    for script in [
+        "#!/bin/sh\nsleep 5\nprintf '%s' '{\"values\":[{\"value\":\"late\"}]}'\n",
+        "#!/bin/sh\nexit 3\n",
+        "#!/bin/sh\nprintf 'total garbage'\n",
+    ] {
+        let temp = isolated();
+        enable_carapace_config(&temp);
+        let bin = temp.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let shim = bin.join("carapace");
+        fs::write(&shim, script).unwrap();
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(temp.path())
+            .status()
+            .unwrap();
+        fs::write(temp.path().join("seed"), "x").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(temp.path())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "commit",
+                "-qm",
+                "seed",
+            ])
+            .current_dir(temp.path())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["checkout", "-qb", "real/branch"])
+            .current_dir(temp.path())
+            .status()
+            .unwrap();
+        let start = Instant::now();
+        let response = query_with(&temp, "git checkout re", temp.path(), &[]);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "unresponsive carapace stalled the query: {elapsed:?}"
+        );
+        // The rest of the pipeline carried on regardless.
+        let values: Vec<_> = response["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["value"].as_str().unwrap())
+            .collect();
+        assert!(
+            values.contains(&"real/branch"),
+            "dynamic provider lost alongside broken carapace: {values:?}"
+        );
+    }
+}
+
+/// Repeated positions are served from the answer cache: one subprocess call,
+/// however many queries repeat the same question.
+#[test]
+fn carapace_answers_are_cached() {
+    let temp = isolated();
+    enable_carapace_config(&temp);
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    carapace_shim(&bin, CARAPACE_LIST, GIT_EXPORT);
+    Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(temp.path())
+        .status()
+        .unwrap();
+    fs::write(temp.path().join("seed"), "x").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(temp.path())
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-qm",
+            "seed",
+        ])
+        .current_dir(temp.path())
+        .status()
+        .unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    for _ in 0..2 {
+        let output = cargo_bin_cmd!("adaptive")
+            .args(["query", "--buffer", "git checkout "])
+            .env("PATH", &path)
+            .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
+            .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
+            .env("ADAPTIVE_CONFIG", temp.path().join("config.toml"))
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+    }
+    let counter = bin.join("carapace-calls");
+    let calls: u32 = fs::read_to_string(&counter)
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    assert_eq!(
+        calls, 1,
+        "identical position queried carapace more than once"
+    );
+}
+
+/// The CLI toggle round-trips through the config file and gates the engine.
+#[test]
+fn carapace_cli_toggle_controls_the_source() {
+    let temp = isolated();
+    enable_carapace_config(&temp);
+    let bin = temp.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    carapace_shim(&bin, CARAPACE_LIST, DEPLOYCTL_EXPORT);
+    let tool = bin.join("deployctl");
+    fs::write(&tool, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    let run_cli = |args: &[&str]| {
+        let output = cargo_bin_cmd!("adaptive")
+            .args(args)
+            .env("PATH", bin.display().to_string())
+            .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
+            .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
+            .env("ADAPTIVE_CONFIG", temp.path().join("config.toml"))
+            .output()
+            .unwrap();
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        )
+    };
+    let (ok, out) = run_cli(&["carapace", "status"]);
+    assert!(ok);
+    assert!(out.contains("Detected:"), "{out}");
+    assert!(out.contains("State: active"), "{out}");
+
+    let (ok, out) = run_cli(&["carapace", "disable"]);
+    assert!(ok, "{out}");
+    let (_, out) = run_cli(&["carapace", "status"]);
+    assert!(out.contains("inactive (disabled in config)"), "{out}");
+    let response = query_with(&temp, "deployctl get ", temp.path(), &[]);
+    let sources: Vec<_> = response["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["source"].as_str().unwrap_or_default())
+        .collect();
+    assert!(!sources.contains(&"carapace"), "{sources:?}");
+
+    let (ok, _) = run_cli(&["carapace", "enable"]);
+    assert!(ok);
+    let (_, out) = run_cli(&["carapace", "status"]);
+    assert!(out.contains("State: active"), "{out}");
+}
+
+/// Git workflows gain worktree, deletable-branch, and commit awareness on top
+/// of the existing ref completion.
+#[test]
+fn git_provider_covers_worktrees_deletions_and_commits() {
+    let temp = isolated();
+    let repo = temp.path().join("repo");
+    fs::create_dir(&repo).unwrap();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+            .status()
+            .unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["checkout", "-qb", "feature/engine"]);
+    fs::write(repo.join("file"), "one").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "first change"]);
+    fs::write(repo.join("file"), "two").unwrap();
+    git(&["commit", "-aqm", "second change"]);
+    // A sibling directory and an existing linked worktree.
+    fs::create_dir(temp.path().join("sibling-dir")).unwrap();
+    git(&["worktree", "add", "-b", "wt-branch", "../linked-wt"]);
+
+    // Deletable branches exclude the checked-out one.
+    let current = String::from_utf8(
+        Command::new("git")
+            .args(["symbolic-ref", "--short", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let deletable = query_with(&temp, "git branch -d ", &repo, &[]);
+    let deletable_values: Vec<_> = deletable["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["value"].as_str().unwrap())
+        .collect();
+    assert!(
+        deletable_values.contains(&"wt-branch"),
+        "{deletable_values:?}"
+    );
+    let checked_out = current.trim();
+    assert!(
+        !deletable_values.contains(&checked_out),
+        "offered deleting the checked-out branch {checked_out}: {deletable_values:?}"
+    );
+
+    // Cherry-pick offers recent commits by hash.
+    let picked = query_with(&temp, "git cherry-pick ", &repo, &[]);
+    let picked_values: Vec<_> = picked["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["value"].as_str().unwrap())
+        .collect();
+    let head: String = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(
+        picked_values.contains(&head.trim()),
+        "expected HEAD hash in {picked_values:?}"
+    );
+
+    // `worktree add <path>` suggests sibling directories and existing worktrees.
+    let add_path = query_with(&temp, "git worktree add ", &repo, &[]);
+    let add_path_values: Vec<_> = add_path["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["value"].as_str().unwrap())
+        .collect();
+    assert!(
+        add_path_values.contains(&"../sibling-dir/"),
+        "{add_path_values:?}"
+    );
+    assert!(
+        add_path_values.iter().any(|v| v.ends_with("linked-wt")),
+        "existing worktree missing from {add_path_values:?}"
+    );
+
+    // ...and the second slot offers branches for the new worktree.
+    let add_branch = query_with(&temp, "git worktree add ../somewhere ", &repo, &[]);
+    let add_branch_values: Vec<_> = add_branch["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["value"].as_str().unwrap())
+        .collect();
+    assert!(
+        add_branch_values.contains(&"feature/engine"),
+        "{add_branch_values:?}"
     );
 }

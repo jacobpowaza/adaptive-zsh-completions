@@ -133,6 +133,9 @@ adaptive cache status
 adaptive cache refresh git
 adaptive cache prune
 adaptive cache clear
+adaptive carapace status
+adaptive carapace enable
+adaptive carapace disable
 adaptive history status
 adaptive history import [file]
 adaptive history feedback accept --context KEY --value VALUE
@@ -187,9 +190,17 @@ enabled = true
 [providers.docker]
 enabled = true
 
+# Optional external completion engine; auto-detected on PATH.
+[carapace]
+enabled = true
+
 [privacy]
 telemetry = false
 ```
+
+### Optional: Carapace
+
+If [carapace-bin](https://carapace-sh.github.io/carapace-bin/) is installed, Adaptive merges its exact command knowledge (subcommands, flags, enums, positionals for hundreds of CLIs) into every query, then ranks your learned habits above it. Nothing is required: without carapace everything works as before, and `adaptive carapace disable` turns the source off without uninstalling anything. Answers are cached against a fingerprint of the carapace binary with a hard 400 ms timeout, so completion stays instant and a broken carapace can never stall the shell.
 
 ## Development
 

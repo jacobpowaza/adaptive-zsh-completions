@@ -8,6 +8,9 @@ pub struct Config {
     pub completion: CompletionConfig,
     pub ui: UiConfig,
     pub providers: ProvidersConfig,
+    /// Optional `carapace-bin` integration: an external completion engine
+    /// consulted when present, never required (see `crate::carapace`).
+    pub carapace: CarapaceConfig,
     pub privacy: PrivacyConfig,
 }
 
@@ -45,6 +48,13 @@ pub struct ProvidersConfig {
 pub struct ProviderToggle {
     pub enabled: bool,
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CarapaceConfig {
+    /// Consult carapace when it is found on PATH. Adaptive stays fully
+    /// functional without it; this only gates the extra source.
+    pub enabled: bool,
+}
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct PrivacyConfig {
@@ -76,6 +86,11 @@ impl Default for ProviderToggle {
         Self { enabled: true }
     }
 }
+impl Default for CarapaceConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
 
 impl Config {
     pub fn path() -> PathBuf {
@@ -101,6 +116,23 @@ impl Config {
         }
         Ok(config)
     }
+    /// Persists the configuration atomically (temp file + rename) at its
+    /// configured path. Used by the CLI toggles
+    /// (`adaptive carapace enable|disable`).
+    pub fn save(&self) -> Result<()> {
+        self.save_to(Self::path())
+    }
+    pub fn save_to(&self, path: PathBuf) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("could not create {}", parent.display()))?;
+        }
+        let raw = toml::to_string_pretty(self).context("could not serialize config")?;
+        let temp = path.with_extension(format!("{}.tmp", std::process::id()));
+        fs::write(&temp, raw).with_context(|| format!("could not write {}", temp.display()))?;
+        fs::rename(&temp, &path).with_context(|| format!("could not update {}", path.display()))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -118,5 +150,17 @@ mod tests {
     fn telemetry_defaults_off() {
         assert!(!Config::default().privacy.telemetry);
         assert!(Config::default().providers.forge.enabled);
+        assert!(Config::default().carapace.enabled);
+    }
+    #[test]
+    fn save_roundtrips_the_toggle() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("nested").join("config.toml");
+        let mut config = Config::default();
+        config.carapace.enabled = false;
+        config.save_to(path.clone()).unwrap();
+        let reloaded: Config = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(!reloaded.carapace.enabled);
+        assert!(reloaded.completion.history);
     }
 }

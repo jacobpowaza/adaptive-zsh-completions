@@ -43,6 +43,11 @@ enum Command {
         #[command(subcommand)]
         command: CacheCommand,
     },
+    /// Manage the optional carapace-bin completion source.
+    Carapace {
+        #[command(subcommand)]
+        command: CarapaceCommand,
+    },
     History {
         #[command(subcommand)]
         command: HistoryCommand,
@@ -84,6 +89,15 @@ enum CacheCommand {
     Clear,
     Refresh { command: String, path: Vec<String> },
     Prune,
+}
+#[derive(Subcommand)]
+enum CarapaceCommand {
+    /// Show whether carapace is detected, and whether it is enabled.
+    Status,
+    /// Use carapace as a completion source when it is installed.
+    Enable,
+    /// Stop consulting carapace without uninstalling anything.
+    Disable,
 }
 #[derive(Subcommand)]
 enum HistoryCommand {
@@ -194,6 +208,7 @@ fn run() -> Result<()> {
         }
         Command::Doctor => doctor()?,
         Command::Cache { command } => cache_command(command)?,
+        Command::Carapace { command } => carapace_command(command)?,
         Command::History { command } => history_command(command)?,
         Command::Version => println!("adaptive {VERSION}"),
     }
@@ -255,6 +270,47 @@ fn cache_command(c: CacheCommand) -> Result<()> {
     }
     Ok(())
 }
+fn carapace_command(command: CarapaceCommand) -> Result<()> {
+    use adaptive_completion::carapace::Carapace;
+    match command {
+        CarapaceCommand::Status => {
+            let config = Config::load()?;
+            let detected = Carapace::detect();
+            match &detected {
+                Some(carapace) => println!(
+                    "Detected: {} ({})",
+                    carapace.path().display(),
+                    carapace.version()
+                ),
+                None => println!("Detected: not found on PATH"),
+            }
+            println!("Setting: carapace.enabled = {}", config.carapace.enabled);
+            let state = match (&detected, config.carapace.enabled) {
+                (Some(_), true) => "active",
+                (Some(_), false) => "inactive (disabled in config)",
+                (None, true) => "unavailable (install carapace-bin to enable)",
+                (None, false) => "unavailable",
+            };
+            println!("State: {state}");
+        }
+        CarapaceCommand::Enable | CarapaceCommand::Disable => {
+            let enabling = matches!(command, CarapaceCommand::Enable);
+            let mut config = Config::load()?;
+            config.carapace.enabled = enabling;
+            config.save()?;
+            println!("carapace.enabled = {enabling}");
+            if Carapace::detect().is_none() {
+                println!(
+                    "carapace was not found on PATH; install carapace-bin to activate this source"
+                );
+            } else if enabling {
+                println!("carapace answers are now merged into completions");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn history_command(c: HistoryCommand) -> Result<()> {
     let mut h = HistoryDb::load()?;
     match c {
@@ -355,6 +411,18 @@ fn doctor() -> Result<()> {
     );
     println!("Git: {}", available("git"));
     println!("GitHub CLI: {}", available("gh"));
+    println!(
+        "Carapace: {} ({})",
+        match adaptive_completion::carapace::Carapace::detect() {
+            Some(carapace) => carapace.path().display().to_string(),
+            None => "not installed".into(),
+        },
+        if config.carapace.enabled {
+            "optional source enabled"
+        } else {
+            "disabled in config"
+        }
+    );
     println!("Forge providers: github.com, gitlab.com, codeberg.org, gitea.com, bitbucket.org");
     println!("Zsh: {}", available("zsh"));
     println!(

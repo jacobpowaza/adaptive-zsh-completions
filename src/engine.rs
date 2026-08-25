@@ -72,7 +72,7 @@ impl Engine {
         let prior_key_str = prior_key(&context);
         let prior_tokens = priors::priors().next_tokens(&prior_key_str, scope);
 
-        let provider_candidates = providers::candidates(&ProviderContext {
+        let mut provider_candidates = providers::candidates(&ProviderContext {
             query: &context,
             cwd,
             cache: &self.cache,
@@ -80,6 +80,34 @@ impl Engine {
             docker_enabled: self.config.providers.docker.enabled,
             offline,
         });
+        // The optional carapace layer answers with exact command knowledge
+        // (subcommands, flags, enums, positionals) for any tool it has a
+        // completer for. Its candidates join the provider pool before the
+        // documented-options decision below: where carapace spoke, parsing
+        // `--help` would only add noise and latency -- the kubectl case --
+        // while an explicit TAB listing still merges both.
+        if self.config.carapace.enabled
+            && !bare_command
+            && context
+                .command
+                .as_deref()
+                .is_some_and(crate::carapace::valid_completer_name)
+            && let Some(carapace) = crate::carapace::Carapace::detect()
+            && let Some(command) = context.command.as_deref()
+        {
+            // The completer listing (cached per binary fingerprint for a day)
+            // is the cheap gate that keeps unknown commands from paying for a
+            // subprocess at every keystroke. When no listing can be had,
+            // asking anyway stays the safe default.
+            let worth_asking = carapace
+                .known_completers(&self.cache)
+                .is_none_or(|names| names.iter().any(|name| name == command));
+            if worth_asking {
+                let answers =
+                    carapace.complete(&self.cache, command, &context.args, &context.current, cwd);
+                provider_candidates.extend(answers);
+            }
+        }
         // Providers answer "what is valid *here*" (branches, scripts, hosts).
         // When one spoke, generic help text must not bury its answers -- but
         // a leading "-" is the user explicitly asking for this command's

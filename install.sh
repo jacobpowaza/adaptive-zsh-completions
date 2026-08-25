@@ -81,6 +81,69 @@ if [ -n "${ADAPTIVE_SOURCE_DIR:-}" ]; then install_from_source
 elif ! install_release; then say "Prebuilt release unavailable; falling back to source."; install_from_source
 fi
 
+carapace_manual_hint() {
+  cat <<'CARAPACE_EOF'
+Manual install options:
+  macOS            brew install carapace-bin
+  Arch Linux       sudo pacman -S carapace-bin
+  Fedora           sudo dnf install carapace-bin
+  Alpine           sudo apk add carapace-bin
+  Debian/Ubuntu    https://carapace-sh.github.io/carapace-bin/setup.html
+
+Adaptive works fully without it; carapace only adds extra command knowledge.
+Toggling later: adaptive carapace enable | disable | status
+CARAPACE_EOF
+}
+
+try_install_carapace() {
+  if command -v brew >/dev/null 2>&1; then
+    brew install carapace-bin
+  elif command -v pacman >/dev/null 2>&1; then
+    sudo pacman -S --noconfirm carapace-bin
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y carapace-bin
+  elif command -v apk >/dev/null 2>&1; then
+    sudo apk add carapace-bin
+  elif command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update -qq && sudo apt-get install -y carapace-bin
+  else
+    return 1
+  fi
+}
+
+if command -v carapace >/dev/null 2>&1; then
+  say "Carapace detected at $(command -v carapace): merged into Adaptive completions."
+else
+  case "${ADAPTIVE_INSTALL_CARAPACE:-auto}" in
+    yes)
+      say "Installing optional carapace-bin..."
+      if try_install_carapace && command -v carapace >/dev/null 2>&1; then
+        say "Carapace installed."
+      else
+        say "Automatic carapace install failed or unsupported here."
+        carapace_manual_hint
+      fi
+      ;;
+    ask)
+      # Prompts only on a real terminal; piped/CI runs get instructions.
+      if [ -t 0 ] && [ -t 2 ]; then
+        printf '%s' 'Install optional carapace-bin for thousands of extra completers? [y/N] '
+        read -r answer || answer=""
+        case "$answer" in
+          y*|Y*) try_install_carapace || carapace_manual_hint ;;
+          *) carapace_manual_hint ;;
+        esac
+      else
+        say "Optional: carapace-bin not found."
+        carapace_manual_hint
+      fi
+      ;;
+    *)
+      say "Optional: carapace-bin not found (adds completers for many CLIs; see docs)."
+      ;;
+  esac
+fi
+
 touch "$ZSHRC"
 if ! grep -q '^# >>> adaptive initialize >>>$' "$ZSHRC"; then
   backup="$ZSHRC.adaptive-backup.$(date +%Y%m%d%H%M%S).$$"

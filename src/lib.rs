@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod carapace;
 pub mod config;
 pub mod discovery;
 pub mod docs;

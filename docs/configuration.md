@@ -27,11 +27,34 @@ enabled = true
 [providers.docker]
 enabled = true
 
+# Optional external completion engine (carapace-bin). Detected on PATH at
+# query time; Adaptive works identically without it.
+[carapace]
+enabled = true
+
 [privacy]
 telemetry = false
 ```
 
 Online docs are opt-in because local help/cache should cover the hot path. The resolver only knows explicit official mappings and never evaluates retrieved code. Setting telemetry to true is rejected because v0.1 contains no telemetry implementation.
+
+## Carapace integration (optional)
+
+When [carapace-bin](https://carapace-sh.github.io/carapace-bin/) is installed, Adaptive consults it as an additional completion source: exact subcommands, flags, enum values, positional arguments, and command-specific completions for the hundreds of CLIs it ships completers for — without Adaptive maintaining any per-command list.
+
+- **Detection is automatic.** If `carapace` is on `PATH`, its answers are merged into queries; if not, nothing changes. It is never a hard dependency.
+- **Personalization wins.** Carapace provides correctness and context; your learned habits (frequency + recency + accept feedback) deliberately outweigh it in ranking. A branch you always check out ranks above Carapace's generic suggestions, while Carapace's answers suppress redundant `--help` parsing (`kubectl get <TAB>` comes straight from its schema).
+- **Caching keeps it instant.** Answers are cached per position and working directory with a ten-minute TTL inside a key derived from a fingerprint of the carapace binary itself (path, size, mtime), so upgrading carapace invalidates everything it ever answered. The completer listing is cached for 24 hours; unknown commands never pay for a subprocess at all. The Zsh frontend already runs every query off the ZLE thread, and each carapace call has a hard 400 ms timeout, so a hung or broken carapace can only ever cost one missed answer — never a stalled shell.
+
+Manage it without reinstalling:
+
+```sh
+adaptive carapace status    # detected path/version + enabled state
+adaptive carapace disable   # stop consulting carapace
+adaptive carapace enable    # use it again when present
+```
+
+The installer detects carapace too: found → it says so; missing → it prints optional install instructions (`ADAPTIVE_INSTALL_CARAPACE=yes` attempts the install automatically via Homebrew/apt/dnf/pacman/apk; `ask` prompts on interactive terminals). Adaptive installs and works fine either way.
 
 Zsh-specific environment settings must be assigned before the managed initialization block:
 
