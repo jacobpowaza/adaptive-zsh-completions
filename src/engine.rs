@@ -72,42 +72,67 @@ impl Engine {
         let prior_key_str = prior_key(&context);
         let prior_tokens = priors::priors().next_tokens(&prior_key_str, scope);
 
-        let mut provider_candidates = providers::candidates(&ProviderContext {
+        // Providers answer "what is valid *here*" (branches, scripts, hosts);
+        // the optional carapace layer adds exact command knowledge (flags,
+        // subcommands, enums) for tools it has a completer for. Both spend
+        // their budget in subprocesses, so when both will actually run they
+        // share the wait on two threads and merge in stable order (providers
+        // first). Where carapace spoke, the documented-options decision
+        // below skips `--help` parsing -- the kubectl case -- while an
+        // explicit TAB listing still merges both. When no provider owns the
+        // position, threading would only add overhead: everything runs
+        // inline.
+        let carapace_wanted = self.config.carapace.enabled
+            && !bare_command
+            && context
+                .command
+                .as_deref()
+                .is_some_and(crate::carapace::valid_completer_name);
+        let provider_context = ProviderContext {
             query: &context,
             cwd,
             cache: &self.cache,
             forge_enabled: self.config.providers.forge.enabled,
             docker_enabled: self.config.providers.docker.enabled,
             offline,
-        });
-        // The optional carapace layer answers with exact command knowledge
-        // (subcommands, flags, enums, positionals) for any tool it has a
-        // completer for. Its candidates join the provider pool before the
-        // documented-options decision below: where carapace spoke, parsing
-        // `--help` would only add noise and latency -- the kubectl case --
-        // while an explicit TAB listing still merges both.
-        if self.config.carapace.enabled
-            && !bare_command
-            && context
-                .command
-                .as_deref()
-                .is_some_and(crate::carapace::valid_completer_name)
-            && let Some(carapace) = crate::carapace::Carapace::detect()
-            && let Some(command) = context.command.as_deref()
-        {
-            // The completer listing (cached per binary fingerprint for a day)
-            // is the cheap gate that keeps unknown commands from paying for a
-            // subprocess at every keystroke. When no listing can be had,
-            // asking anyway stays the safe default.
-            let worth_asking = carapace
-                .known_completers(&self.cache)
-                .is_none_or(|names| names.iter().any(|name| name == command));
-            if worth_asking {
-                let answers =
-                    carapace.complete(&self.cache, command, &context.args, &context.current, cwd);
-                provider_candidates.extend(answers);
+        };
+        let provider_candidates = if carapace_wanted && providers::any_match(&provider_context) {
+            let command = context.command.clone().unwrap_or_default();
+            std::thread::scope(|scope| {
+                let providers = scope.spawn(|| providers::candidates(&provider_context));
+                let carapace = scope.spawn(|| {
+                    crate::carapace::Carapace::detect().map(|carapace| {
+                        carapace.complete(
+                            &self.cache,
+                            &command,
+                            &context.args,
+                            &context.current,
+                            cwd,
+                        )
+                    })
+                });
+                let mut candidates = providers.join().unwrap_or_default();
+                if let Ok(Some(mut answers)) = carapace.join() {
+                    candidates.append(&mut answers);
+                }
+                candidates
+            })
+        } else {
+            let mut candidates = providers::candidates(&provider_context);
+            if carapace_wanted
+                && let Some(carapace) = crate::carapace::Carapace::detect()
+                && let Some(command) = context.command.as_deref()
+            {
+                candidates.extend(carapace.complete(
+                    &self.cache,
+                    command,
+                    &context.args,
+                    &context.current,
+                    cwd,
+                ));
             }
-        }
+            candidates
+        };
         // Providers answer "what is valid *here*" (branches, scripts, hosts).
         // When one spoke, generic help text must not bury its answers -- but
         // a leading "-" is the user explicitly asking for this command's
@@ -121,8 +146,10 @@ impl Engine {
         let mut candidates = provider_candidates;
 
         // ---- persistent usage memory -------------------------------------
+        // The profile can be megabytes; parsing it is the single most
+        // expensive thing a query does, so it only happens when history is
+        // switched on and can actually contribute.
         let half_life = self.config.completion.half_life_days;
-        let profile = HistoryDb::load().unwrap_or_default();
         let mut usage: HashMap<String, Usage> = HashMap::new();
         let mut rejected_usage: HashMap<String, Usage> = HashMap::new();
         // Decayed weights straight from the learned model for this position,
@@ -134,104 +161,110 @@ impl Engine {
         // exact position without the shell re-deriving engine internals.
         let context_key = position_key(&context, bare_command, cwd);
 
-        if self.config.completion.history && profile.enabled {
-            if bare_command {
-                // Nothing (or a first letter) typed: predict whole commands.
-                if context.current.is_empty() && self.config.completion.predictive {
-                    let dir_keys = history::dir_lookup_keys(cwd);
-                    let prev_head = prev.and_then(history::command_head);
-                    for (name, weight, last) in
-                        profile.command_weights(&dir_keys, prev_head.as_deref(), half_life, 12)
-                    {
-                        candidates.push(Candidate::new(
-                            name.clone(),
-                            "predicted from your usage",
-                            Source::History,
-                        ));
-                        predictions.insert(name.clone(), weight);
-                        let entry = usage.entry(name).or_insert_with(|| Usage {
-                            count: 0,
-                            last_used: last,
-                        });
-                        entry.count = entry.count.saturating_add(weight.max(1.0) as u64);
-                        entry.last_used = entry.last_used.max(last);
-                    }
-                }
-                // A typed prefix can also complete to an entire remembered
-                // line (`c` -> `claude --dangerously-skip-permissions`).
-                if self.config.completion.chain_prediction && !context.current.is_empty() {
-                    for (line, seen) in profile.chain_from_head(&context.current, half_life, 8) {
-                        usage.insert(line.clone(), seen);
-                        candidates.push(Candidate::new(
-                            line,
-                            "full command from your usage",
-                            Source::History,
-                        ));
-                    }
-                }
-            } else if let Some(command) = context.command.as_deref() {
-                // Trailing space or partial token: the learned next-token
-                // table answers instantly, before any discovery runs.
-                let exact = exact_path_key(command, &context.args);
-                if self.config.completion.predictive {
-                    for (token, weight, last) in profile.next_token_weights(&exact, half_life, 16) {
-                        predictions.insert(token.clone(), weight);
-                        let entry = usage.entry(token.clone()).or_insert_with(|| Usage {
-                            count: 0,
-                            last_used: last,
-                        });
-                        entry.count = entry.count.saturating_add(weight.max(1.0) as u64);
-                        entry.last_used = entry.last_used.max(last);
-                        // Recorded directory habits apply to the slash form
-                        // the filesystem provider actually completes.
-                        if command == "cd" && !token.ends_with('/') {
-                            let mut with_slash = usage[&token].clone();
-                            with_slash.count = with_slash.count.saturating_sub(1);
-                            usage.insert(format!("{token}/"), with_slash);
+        if self.config.completion.history {
+            let profile = HistoryDb::load().unwrap_or_default();
+            if profile.enabled {
+                if bare_command {
+                    // Nothing (or a first letter) typed: predict whole commands.
+                    if context.current.is_empty() && self.config.completion.predictive {
+                        let dir_keys = history::dir_lookup_keys(cwd);
+                        let prev_head = prev.and_then(history::command_head);
+                        for (name, weight, last) in
+                            profile.command_weights(&dir_keys, prev_head.as_deref(), half_life, 12)
+                        {
+                            candidates.push(Candidate::new(
+                                name.clone(),
+                                "predicted from your usage",
+                                Source::History,
+                            ));
+                            predictions.insert(name.clone(), weight);
+                            let entry = usage.entry(name).or_insert_with(|| Usage {
+                                count: 0,
+                                last_used: last,
+                            });
+                            entry.count = entry.count.saturating_add(weight.max(1.0) as u64);
+                            entry.last_used = entry.last_used.max(last);
                         }
-                        candidates.push(Candidate::new(
-                            token,
-                            "learned from your usage",
-                            Source::History,
-                        ));
+                    }
+                    // A typed prefix can also complete to an entire remembered
+                    // line (`c` -> `claude --dangerously-skip-permissions`).
+                    if self.config.completion.chain_prediction && !context.current.is_empty() {
+                        for (line, seen) in profile.chain_from_head(&context.current, half_life, 8)
+                        {
+                            usage.insert(line.clone(), seen);
+                            candidates.push(Candidate::new(
+                                line,
+                                "full command from your usage",
+                                Source::History,
+                            ));
+                        }
+                    }
+                } else if let Some(command) = context.command.as_deref() {
+                    // Trailing space or partial token: the learned next-token
+                    // table answers instantly, before any discovery runs.
+                    let exact = exact_path_key(command, &context.args);
+                    if self.config.completion.predictive {
+                        for (token, weight, last) in
+                            profile.next_token_weights(&exact, half_life, 16)
+                        {
+                            predictions.insert(token.clone(), weight);
+                            let entry = usage.entry(token.clone()).or_insert_with(|| Usage {
+                                count: 0,
+                                last_used: last,
+                            });
+                            entry.count = entry.count.saturating_add(weight.max(1.0) as u64);
+                            entry.last_used = entry.last_used.max(last);
+                            // Recorded directory habits apply to the slash form
+                            // the filesystem provider actually completes.
+                            if command == "cd" && !token.ends_with('/') {
+                                let mut with_slash = usage[&token].clone();
+                                with_slash.count = with_slash.count.saturating_sub(1);
+                                usage.insert(format!("{token}/"), with_slash);
+                            }
+                            candidates.push(Candidate::new(
+                                token,
+                                "learned from your usage",
+                                Source::History,
+                            ));
+                        }
+                    }
+                    // Full remainders of remembered lines (`git clone` already
+                    // typed, remainder `https://github.com/...`) continue the
+                    // chain past a single token.
+                    if self.config.completion.chain_prediction {
+                        for (rest, seen) in
+                            profile.chain_after_command(&exact, &context.current, half_life, 8)
+                        {
+                            usage.insert(rest.clone(), seen);
+                            candidates.push(Candidate::new(
+                                rest,
+                                "rest of command from your usage",
+                                Source::History,
+                            ));
+                        }
                     }
                 }
-                // Full remainders of remembered lines (`git clone` already
-                // typed, remainder `https://github.com/...`) continue the
-                // chain past a single token.
-                if self.config.completion.chain_prediction {
-                    for (rest, seen) in
-                        profile.chain_after_command(&exact, &context.current, half_life, 8)
-                    {
-                        usage.insert(rest.clone(), seen);
-                        candidates.push(Candidate::new(
-                            rest,
-                            "rest of command from your usage",
-                            Source::History,
-                        ));
+                // Deliberate acceptance is the strongest kind of usage: fold it
+                // into frequency/recency exactly like another real execution.
+                if let Some(feedback) = profile.accepted.get(&context_key) {
+                    for (value, seen) in feedback {
+                        let weight = seen.weight(half_life, now_secs());
+                        let entry = usage.entry(value.clone()).or_default();
+                        entry.count = entry.count.saturating_add(weight.ceil().max(1.0) as u64);
+                        entry.last_used = entry.last_used.max(seen.last_used);
                     }
                 }
-            }
-            // Deliberate acceptance is the strongest kind of usage: fold it
-            // into frequency/recency exactly like another real execution.
-            if let Some(feedback) = profile.accepted.get(&context_key) {
-                for (value, seen) in feedback {
-                    let weight = seen.weight(half_life, now_secs());
-                    let entry = usage.entry(value.clone()).or_default();
-                    entry.count = entry.count.saturating_add(weight.ceil().max(1.0) as u64);
-                    entry.last_used = entry.last_used.max(seen.last_used);
+                if let Some(rejections) = profile.rejected.get(&context_key) {
+                    rejected_usage = rejections.clone();
                 }
-            }
-            if let Some(rejections) = profile.rejected.get(&context_key) {
-                rejected_usage = rejections.clone();
-            }
-            if bare_command {
-                // First token on the line: every recorded command line is a
-                // vote for its own name, so a user who lives in `gh` gets
-                // `gh` ahead of the global default `git`.
-                for (pattern, recorded) in &profile.patterns {
-                    if let Some(name) = pattern.split_whitespace().next() {
-                        add_usage(&mut usage, name.to_owned(), recorded);
+                if bare_command {
+                    // First token on the line: every recorded command line is a
+                    // vote for its own name, so a user who lives in `gh` gets
+                    // `gh` ahead of the global default `git`.
+                    for (pattern, recorded) in &profile.patterns {
+                        if let Some(name) = pattern.split_whitespace().next() {
+                            add_usage(&mut usage, name.to_owned(), recorded);
+                        }
                     }
                 }
             }

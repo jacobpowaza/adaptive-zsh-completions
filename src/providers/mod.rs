@@ -27,8 +27,8 @@ pub trait Provider {
     fn complete(&self, ctx: &ProviderContext<'_>) -> Result<Vec<Candidate>>;
 }
 
-pub fn candidates(ctx: &ProviderContext<'_>) -> Vec<Candidate> {
-    let providers: Vec<Box<dyn Provider>> = vec![
+fn providers() -> Vec<Box<dyn Provider>> {
+    vec![
         Box::new(command::PathCommandProvider),
         Box::new(forge::ForgeProvider),
         Box::new(git::GitProvider),
@@ -36,9 +36,12 @@ pub fn candidates(ctx: &ProviderContext<'_>) -> Vec<Candidate> {
         Box::new(ssh::SshProvider),
         Box::new(docker::DockerProvider),
         Box::new(filesystem::FilesystemProvider),
-    ];
+    ]
+}
+
+pub fn candidates(ctx: &ProviderContext<'_>) -> Vec<Candidate> {
     let mut out = Vec::new();
-    for provider in providers {
+    for provider in providers() {
         if provider.matches(ctx) {
             if let Ok(mut values) = provider.complete(ctx) {
                 out.append(&mut values)
@@ -46,6 +49,13 @@ pub fn candidates(ctx: &ProviderContext<'_>) -> Vec<Candidate> {
         }
     }
     out
+}
+
+/// Whether any provider owns this position at all. Cheap: matching is
+/// designed to be, completion is not. Used to decide whether provider work
+/// and carapace are worth running on separate threads.
+pub fn any_match(ctx: &ProviderContext<'_>) -> bool {
+    providers().iter().any(|provider| provider.matches(ctx))
 }
 
 pub use forge::{ForgeInput, parse_forge_input};

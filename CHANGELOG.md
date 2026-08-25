@@ -4,6 +4,10 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ## [Unreleased]
 
+### Changed
+
+- Performance pass on the query pipeline: the warm carapace path touches exactly two filesystem entries (one binary-fingerprint stat, one cached-answer read); the completer listing and negative answers are consulted only on cache misses; provider subprocesses (git branches, npm scripts, ...) and carapace now run concurrently where both apply instead of sequentially; the usage profile is no longer parsed at all when history is disabled; and the HTTP client shrank from reqwest/tokio to `ureq` (binary 5.3 MB → 4.6 MB, same rustls TLS, identical forge/docs behavior). In-process, a fully warm query — carapace included — completes in about 60 µs; remaining end-to-end latency is process startup.
+
 ### Added
 
 - Optional [carapace-bin](https://carapace-sh.github.io/carapace-bin/) integration: when carapace is on `PATH`, its exact command knowledge (subcommands, flags, enum values, positional and command-specific completions) is queried for any tool it has a completer for and merged with Adaptive's providers, learned history, priors, and help parsing. Answers are cached per position and working directory under a fingerprint of the carapace binary (path/size/mtime), the completer listing for 24 hours; a 400 ms hard timeout plus the frontend's existing off-thread queries keep completion instant, and missing, disabled, slow, or crashing carapace degrades to silence. `carapace.enabled = true` (default) in the config controls it, with `adaptive carapace status | enable | disable` toggles and a doctor line.

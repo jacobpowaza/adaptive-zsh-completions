@@ -129,6 +129,11 @@ impl Carapace {
     /// Completions for `command` with `args` already typed and `current` the
     /// word being completed. Never fails: any problem (missing binary,
     /// timeout, hostile output) degrades to no candidates.
+    ///
+    /// The hot path is deliberately two filesystem operations: one stat for
+    /// the binary fingerprint and one cached-answer read. Everything else --
+    /// the completer listing, the subprocess -- runs only on a cache miss,
+    /// and unknown completers are negative-cached like any other answer.
     pub fn complete(
         &self,
         cache: &Cache,
@@ -150,6 +155,22 @@ impl Carapace {
         if let Ok(Some(cached)) = cache.get::<Vec<Candidate>>(ANSWERS_NAMESPACE, &key) {
             return cached;
         }
+        // Cache miss: the completer listing (itself cached per fingerprint)
+        // decides whether a subprocess is worth spawning at all. When no
+        // listing can be had, asking anyway stays the safe default.
+        if let Some(names) = self.known_completers(cache)
+            && !names.iter().any(|name| name == command)
+        {
+            // Empty answers are cached too: an unknown completer or a
+            // transient failure must not cost a subprocess on every keystroke.
+            let _ = cache.put(
+                ANSWERS_NAMESPACE,
+                &key,
+                &Vec::<Candidate>::new(),
+                Some(ANSWERS_TTL),
+            );
+            return Vec::new();
+        }
         let mut cli: Vec<String> = Vec::with_capacity(args.len() + 3);
         cli.push(command.to_owned());
         cli.push("export".into());
@@ -163,8 +184,6 @@ impl Carapace {
         )
         .unwrap_or_default();
         let candidates = parse_export(&output);
-        // Empty answers are cached too: an unknown completer or a transient
-        // failure must not cost a subprocess on every keystroke.
         let _ = cache.put(ANSWERS_NAMESPACE, &key, &candidates, Some(ANSWERS_TTL));
         candidates
     }
@@ -305,7 +324,7 @@ mod tests {
         fs::write(
             &shim,
             format!(
-                "#!/bin/sh\nn=$(cat {} 2>/dev/null || echo 0); echo $((n+1)) > {}\nprintf '{{\"values\":[{{\"value\":\"alpha\"}}]}}'\n",
+                "#!/bin/sh\nif [ \"$1\" = \"--list\" ]; then\n  printf 'tool\\n'\n  exit 0\nfi\nn=$(cat {} 2>/dev/null || echo 0); echo $((n+1)) > {}\nprintf '{{\"values\":[{{\"value\":\"alpha\"}}]}}'\n",
                 counter.display(),
                 counter.display()
             ),

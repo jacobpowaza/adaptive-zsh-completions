@@ -40,19 +40,20 @@ impl DocumentationResolver for TrustedDocs<'_> {
         if let Some(schema) = self.cache.get("docs", &key)? {
             return Ok(Some(schema));
         }
-        let client = reqwest::blocking::Client::builder()
+        let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(4))
-            .user_agent(format!("adaptive/{}", crate::VERSION))
-            .build()?;
-        let response = client
-            .get(&url)
-            .send()
-            .with_context(|| format!("official documentation unavailable: {url}"))?;
-        if !response.status().is_success() {
-            bail!("official documentation returned {}", response.status())
-        }
+            .user_agent(&format!("adaptive/{}", crate::VERSION))
+            .build();
+        let response = match agent.get(&url).call() {
+            Ok(response) => response,
+            Err(ureq::Error::Status(code, _)) => {
+                bail!("official documentation returned {code}")
+            }
+            Err(e) => return Err(e).context(format!("official documentation unavailable: {url}")),
+        };
         if response
-            .content_length()
+            .header("Content-Length")
+            .and_then(|length| length.parse::<usize>().ok())
             .is_some_and(|n| n > 2 * 1024 * 1024)
         {
             bail!("official documentation response too large")
@@ -60,6 +61,7 @@ impl DocumentationResolver for TrustedDocs<'_> {
         let mut html = String::new();
         use std::io::Read;
         response
+            .into_reader()
             .take(2 * 1024 * 1024 + 1)
             .read_to_string(&mut html)?;
         if html.len() > 2 * 1024 * 1024 {
