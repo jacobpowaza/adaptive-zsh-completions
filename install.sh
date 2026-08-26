@@ -148,6 +148,11 @@ touch "$ZSHRC"
 if ! grep -q '^# >>> adaptive initialize >>>$' "$ZSHRC"; then
   backup="$ZSHRC.adaptive-backup.$(date +%Y%m%d%H%M%S).$$"
   cp "$ZSHRC" "$backup"
+  # Pre-generate the cached integration so the very next shell sources a
+  # file instead of launching the binary, and learn where the data dir
+  # landed (platform-dependent) from the printed source line.
+  init_output=$("$INSTALL_DIR/adaptive" init zsh || true)
+  init_file=$(printf '%s\n' "$init_output" | sed -n "s/^source '\(.*\)'$/\1/p")
   {
     printf '\n# >>> adaptive initialize >>>\n'
     printf 'export PATH="%s:$PATH"\n' "$INSTALL_DIR"
@@ -155,7 +160,16 @@ if ! grep -q '^# >>> adaptive initialize >>>$' "$ZSHRC"; then
     printf "export ADAPTIVE_MENU_NEXT_KEY='%s'\n" "$menu_next_key_escaped"
     printf "export ADAPTIVE_BROWSE_KEY='%s'\n" "$browse_key_escaped"
     printf "export ADAPTIVE_GHOST_STYLE='%s'\n" "$ghost_style_escaped"
-    printf 'eval "$("%s/adaptive" init zsh)"\n' "$INSTALL_DIR"
+    if [ -n "$init_file" ]; then
+      printf "export ADAPTIVE_INIT_FILE='%s'\n" "$(printf '%s' "$init_file" | sed "s/'/'\\\\''/g")"
+      printf 'if [[ -r "$ADAPTIVE_INIT_FILE" ]]; then\n'
+      printf '  source "$ADAPTIVE_INIT_FILE"\n'
+      printf 'else\n'
+      printf '  eval "$(adaptive init zsh)"\n'
+      printf 'fi\n'
+    else
+      printf 'eval "$(adaptive init zsh)"\n'
+    fi
     printf '# <<< adaptive initialize <<<\n'
   } >> "$ZSHRC"
   say "Updated $ZSHRC (backup: $backup)"

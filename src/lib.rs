@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod carapace;
 pub mod config;
+pub mod daemon;
 pub mod discovery;
 pub mod docs;
 pub mod engine;

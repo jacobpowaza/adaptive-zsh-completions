@@ -7,6 +7,12 @@ Adaptive uses `$XDG_CONFIG_HOME/adaptive/config.toml` (normally `~/.config/adapt
 history = true
 online_docs = false
 fuzzy = true
+# How far fuzzy matches may sprawl: the largest gap of unmatched characters
+# allowed between two consecutive typed characters when the prefix matches
+# as an in-order subsequence. One of "tight" (1), "smart" (4), "loose" (8).
+# Cycle at runtime with `adaptive fuzzy cycle` or the Shift-Right / Shift-Left
+# keys; `ADAPTIVE_FUZZY=tight|smart|loose` overrides per shell.
+fuzzy_preset = "smart"
 # Predict the next token proactively at untyped positions (after a trailing
 # space, and on an empty prompt) instead of waiting for a typed prefix.
 predictive = true
@@ -20,6 +26,10 @@ half_life_days = 21.0
 [ui]
 ghost_text = true
 max_candidates = 8
+# Predict a whole command on an untouched prompt. Toggled globally with
+# `adaptive empty on|off|toggle` (or Shift-Up); `ADAPTIVE_EMPTY=on|off`
+# overrides per shell.
+empty_prompt_predictions = true
 
 [providers.forge]
 enabled = true
@@ -35,6 +45,10 @@ enabled = true
 [privacy]
 telemetry = false
 ```
+
+## The daemon
+
+`adaptive serve` runs a long-lived server that keeps the usage profile in memory and answers queries over `<data dir>/adaptive.sock` for every terminal at once. `adaptive daemon start | stop | status` manage it, the Zsh integration starts it automatically on first use (`ADAPTIVE_AUTO_DAEMON=1`) unless `ADAPTIVE_NO_DAEMON=1`, and it exits after 15 idle minutes (`serve --idle-exit-secs N` to tune). Every mutation is persisted immediately, so killing the daemon never loses learned habits.
 
 Online docs are opt-in because local help/cache should cover the hot path. The resolver only knows explicit official mappings and never evaluates retrieved code. Setting telemetry to true is rejected because v0.1 contains no telemetry implementation.
 

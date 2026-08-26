@@ -110,20 +110,36 @@ impl HistoryDb {
     pub fn load() -> Result<Self> {
         let p = path();
         if !p.exists() {
-            return Ok(Self {
-                enabled: true,
-                version: SCHEMA_VERSION,
-                ..Default::default()
-            });
+            return Ok(Self::fresh());
         }
         Ok(serde_json::from_slice(&fs::read(p)?)?)
+    }
+
+    /// A fresh, enabled profile.
+    pub fn fresh() -> Self {
+        Self {
+            enabled: true,
+            version: SCHEMA_VERSION,
+            ..Default::default()
+        }
+    }
+
+    /// Loads the profile, treating an unreadable or corrupt file as "no
+    /// history yet" instead of a hard error. Query and daemon paths use
+    /// this so one bad file cannot silently disable learning (the default
+    /// struct has `enabled = false`); the next successful save overwrites
+    /// the bad file, so this also self-heals.
+    pub fn load_or_fresh() -> Self {
+        Self::load().unwrap_or_else(|_| Self::fresh())
     }
     pub fn save(&self) -> Result<()> {
         let p = path();
         if let Some(d) = p.parent() {
             fs::create_dir_all(d)?;
         }
-        let t = p.with_extension("tmp");
+        // Pid-suffixed temp: concurrent savers (daemon threads, CLI
+        // invocations) must never interleave on one shared temp file.
+        let t = p.with_extension(format!("tmp.{}", std::process::id()));
         fs::write(&t, serde_json::to_vec(self)?)?;
         fs::rename(t, p)?;
         Ok(())
@@ -134,6 +150,15 @@ impl HistoryDb {
     /// feeds the sequence index; either may be absent (e.g. during import).
     pub fn record(&mut self, line: &str, cwd: Option<&str>, prev: Option<&str>) -> bool {
         if !self.enabled {
+            return false;
+        }
+        // The shell's own forgetting rules apply before anything else: a
+        // space-prefixed line is the universal "don't remember this" gesture
+        // (HIST_IGNORE_SPACE), and HISTORY_IGNORE names whole lines zsh will
+        // not keep. Adaptive errs toward forgetting in both cases -- it can
+        // never see the shell's setopt state, so it applies the space rule
+        // unconditionally.
+        if ignored_by_shell(line) {
             return false;
         }
         let Some(pattern) = sanitize(line) else {
@@ -506,6 +531,110 @@ fn strip_extended_history_prefix(line: &str) -> String {
     trimmed.to_owned()
 }
 
+/// True when the shell itself would refuse to remember `line`:
+/// a space/tab prefix (the HIST_IGNORE_SPACE convention) or a match of the
+/// `HISTORY_IGNORE` environment variable.
+///
+/// `HISTORY_IGNORE` is applied the way zsh does -- as glob pattern(s) against
+/// the whole line. The common multi-pattern form `(pat1|pat2)` is split into
+/// alternatives; each pattern is translated to an anchored regex with
+/// `*`, `?`, and `[...]` honored. Exotic extendedglob syntax is not
+/// interpreted (it is matched literally), which can only over-match toward
+/// forgetting, never record something zsh would have dropped.
+pub fn ignored_by_shell(line: &str) -> bool {
+    if line.starts_with(' ') || line.starts_with('\t') {
+        return true;
+    }
+    let Ok(raw) = std::env::var("HISTORY_IGNORE") else {
+        return false;
+    };
+    let patterns = history_ignore_patterns(&raw);
+    let candidate = line.trim();
+    patterns.iter().any(|re| re.is_match(candidate))
+}
+
+/// Compiled fresh per call: recording happens once per executed command, so
+/// a few microseconds of regex compilation never matter, and no caching means
+/// `HISTORY_IGNORE` edits apply immediately to any process that records.
+/// The zsh frontend additionally applies this same rule locally (its own
+/// environment) before reporting a line, so a long-lived daemon spawned
+/// under a different environment still honors the recording shell's choice.
+fn history_ignore_patterns(raw: &str) -> Vec<Regex> {
+    let body = raw.trim();
+    match body.strip_prefix('(').and_then(|b| b.strip_suffix(')')) {
+        // `(a|b|c)` -> ["a", "b", "c"]; a bare pattern stays whole.
+        Some(inner) if !inner.is_empty() => inner
+            .split('|')
+            .filter(|alt| !alt.is_empty())
+            .map(|alt| Regex::new(&glob_to_regex(alt)))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap_or_default(),
+        _ if !body.is_empty() => Regex::new(&glob_to_regex(body))
+            .map(|re| vec![re])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// Translates one shell glob alternative into an anchored regex. `[...]`
+/// classes are passed through verbatim so ranges like `[a-z]` keep working;
+/// anything else metacharacter-ish is escaped literally.
+fn glob_to_regex(glob: &str) -> String {
+    let chars: Vec<char> = glob.chars().collect();
+    let mut out = String::with_capacity(chars.len() * 2 + 2);
+    out.push('^');
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' => {
+                out.push_str(".*");
+                i += 1;
+            }
+            '?' => {
+                out.push('.');
+                i += 1;
+            }
+            '[' => {
+                // Find the closing bracket; zsh classes may start with `!`
+                // (negation) which regex writes as `^`.
+                if let Some(close) = chars[i + 1..].iter().position(|&c| c == ']')
+                    && close >= 1
+                {
+                    let inner = &chars[i + 1..i + 1 + close];
+                    out.push('[');
+                    if inner.first() == Some(&'!') {
+                        out.push('^');
+                        out.extend(inner[1..].iter());
+                    } else {
+                        out.extend(inner.iter());
+                    }
+                    out.push(']');
+                    i += close + 2;
+                } else {
+                    out.push_str("\\[");
+                    i += 1;
+                }
+            }
+            _ => {
+                if regex_syntax_needs_escape(chars[i]) {
+                    out.push('\\');
+                }
+                out.push(chars[i]);
+                i += 1;
+            }
+        }
+    }
+    out.push('$');
+    out
+}
+
+fn regex_syntax_needs_escape(c: char) -> bool {
+    matches!(
+        c,
+        '.' | '+' | '(' | ')' | '|' | '^' | '$' | '{' | '}' | '\\' | '[' | ']'
+    )
+}
+
 pub fn sanitize(input: &str) -> Option<String> {
     let value = input.trim();
     if value.is_empty()
@@ -586,6 +715,28 @@ pub fn data_dir() -> PathBuf {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("adaptive")
         })
+}
+
+/// Unix-domain socket the daemon listens on. Derived from the data dir so
+/// parallel users / test environments never collide.
+pub fn socket_path() -> PathBuf {
+    std::env::var_os("ADAPTIVE_SOCK")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_dir().join("adaptive.sock"))
+}
+
+/// Creates `dir` (and parents) and clamps it to owner-only access, repairing
+/// installs created before permissions were enforced. Best effort.
+pub fn ensure_private_dir(dir: &PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    if fs::create_dir_all(dir).is_ok()
+        && let Ok(metadata) = fs::metadata(dir)
+    {
+        let mode = metadata.permissions().mode();
+        if mode & 0o077 != 0 {
+            let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+        }
+    }
 }
 
 fn now() -> u64 {
@@ -740,5 +891,41 @@ mod tests {
         db.prune();
         // Tiny caps exercised indirectly: heavy survivor present, structure valid.
         assert!(db.patterns.contains_key("favorite always"));
+    }
+
+    #[test]
+    fn space_prefixed_lines_are_never_recorded() {
+        let mut db = fresh();
+        assert!(!db.record(" export AWS_SECRET=whatever", None, None));
+        assert!(!db.record("\tsecret-command --flag", None, None));
+        assert!(db.patterns.is_empty());
+    }
+
+    #[test]
+    fn history_ignore_globs_drop_whole_lines() {
+        let patterns = "(echo *|cargo publish|git push --force*)";
+        let ignored = |line: &str| {
+            let candidate = line.trim();
+            history_ignore_patterns(patterns)
+                .iter()
+                .any(|re| re.is_match(candidate))
+        };
+        assert!(ignored("echo hello"));
+        assert!(!ignored("echo"));
+        assert!(ignored("cargo publish"));
+        assert!(!ignored("cargo publish --dry-run"));
+        assert!(ignored("git push --force-with-lease origin main"));
+        assert!(!ignored("git push origin main"));
+        assert!(!ignored("ls -la"));
+    }
+
+    #[test]
+    fn glob_translation_covers_star_question_and_classes() {
+        assert_eq!(glob_to_regex("*"), "^.*$");
+        assert_eq!(glob_to_regex("a?c"), "^a.c$");
+        assert_eq!(glob_to_regex("[a-z]+.txt"), "^[a-z]\\+\\.txt$");
+        assert_eq!(glob_to_regex("[!a-z]x"), "^[^a-z]x$");
+        assert_eq!(glob_to_regex("a.b"), "^a\\.b$");
+        assert_eq!(glob_to_regex("unterminated["), "^unterminated\\[$");
     }
 }

@@ -16,6 +16,7 @@
 //! tool all travel the same path, they just arrive carrying different priors.
 
 use crate::{
+    config::FuzzyPreset,
     history::Usage,
     model::{Candidate, CandidateKind},
 };
@@ -43,9 +44,10 @@ pub fn rank(
     prefix: &str,
     usage: &HashMap<String, Usage>,
     fuzzy: bool,
+    preset: FuzzyPreset,
     rejected: &HashMap<String, Usage>,
 ) -> Vec<Candidate> {
-    rank_inner(candidates, prefix, usage, fuzzy, false, rejected)
+    rank_inner(candidates, prefix, usage, fuzzy, preset, false, rejected)
 }
 
 pub fn rank_for_list(
@@ -53,6 +55,7 @@ pub fn rank_for_list(
     prefix: &str,
     usage: &HashMap<String, Usage>,
     fuzzy: bool,
+    preset: FuzzyPreset,
     rejected: &HashMap<String, Usage>,
 ) -> Vec<Candidate> {
     let p = prefix.to_ascii_lowercase();
@@ -73,7 +76,7 @@ pub fn rank_for_list(
                     .starts_with(&group_prefix)
         });
     }
-    rank_inner(candidates, prefix, usage, fuzzy, true, rejected)
+    rank_inner(candidates, prefix, usage, fuzzy, preset, true, rejected)
 }
 
 fn rank_inner(
@@ -81,10 +84,12 @@ fn rank_inner(
     prefix: &str,
     usage: &HashMap<String, Usage>,
     fuzzy: bool,
+    preset: FuzzyPreset,
     include_alternatives: bool,
     rejected: &HashMap<String, Usage>,
 ) -> Vec<Candidate> {
     let p = prefix.to_ascii_lowercase();
+    let prefix_chars: Vec<char> = p.chars().collect();
     let has_prefix_match = !p.is_empty()
         && candidates.iter().any(|candidate| {
             candidate.value.to_ascii_lowercase().starts_with(&p)
@@ -125,15 +130,31 @@ fn rank_inner(
         } else if v.starts_with(&p) || d.starts_with(&p) {
             score += 40.0 - (v.len().min(d.len()).saturating_sub(p.len()) as f64 * 0.02)
         } else if fuzzy {
-            let sim = strsim::jaro_winkler(&v, &p).max(strsim::jaro_winkler(&d, &p));
-            if sim < 0.55 {
-                // A fuzzy miss is noise for the inline ghost; the explicit
-                // TAB list keeps it available, just unranked.
-                if !include_alternatives {
-                    weak = true;
+            // Fuzzy matching is a bounded subsequence test (the preset says
+            // how far typed letters may sprawl through the candidate) plus a
+            // Jaro-Winkler quality bar. `gco` reaches `git checkout` under
+            // the default smart preset but cannot wander into
+            // `git remote add origin`.
+            let cand_chars: Vec<char> = v.chars().collect();
+            let disp_chars: Vec<char> = d.chars().collect();
+            let sprawl = bounded_subsequence(&cand_chars, &prefix_chars, preset.max_gap())
+                .or_else(|| bounded_subsequence(&disp_chars, &prefix_chars, preset.max_gap()));
+            match sprawl {
+                Some(compactness) => {
+                    let sim = strsim::jaro_winkler(&v, &p).max(strsim::jaro_winkler(&d, &p));
+                    if sim < 0.55 {
+                        if !include_alternatives {
+                            weak = true;
+                        }
+                    } else {
+                        score += sim * 18.0 + compactness;
+                    }
                 }
-            } else {
-                score += sim * 18.0
+                None => {
+                    if !include_alternatives {
+                        weak = true;
+                    }
+                }
             }
         } else if !include_alternatives {
             weak = true;
@@ -174,6 +195,64 @@ fn rank_inner(
     candidates
 }
 
+/// Matches `prefix` against `candidate` as an in-order subsequence in which
+/// at most `max_gap` unmatched characters may sit between two consecutive
+/// typed characters. Returns a compactness bonus (roughly 0..=8) that
+/// rewards runs of adjacent characters and matches anchored at a word
+/// boundary, or `None` when every anchoring attempt violates the gap bound.
+///
+/// Backtracking is limited to re-anchoring on earlier occurrences of the
+/// first typed character; pathological middle-of-candidate ambiguities are
+/// accepted as misses, which only ever *hides* a suggestion.
+fn bounded_subsequence(candidate: &[char], prefix: &[char], max_gap: usize) -> Option<f64> {
+    if prefix.is_empty() {
+        return Some(0.0);
+    }
+    let lower = |c: char| c.to_ascii_lowercase();
+    for start in 0..candidate.len() {
+        let Some(anchor) =
+            (start..candidate.len()).find(|&i| lower(candidate[i]) == lower(prefix[0]))
+        else {
+            break;
+        };
+        let mut last = anchor;
+        let mut matched = 1usize;
+        let mut consecutive = 0u32;
+        let mut skipped_total = 0usize;
+        let mut viable = true;
+        for &pc in &prefix[1..] {
+            let Some(pos) =
+                ((last + 1)..candidate.len()).find(|&i| lower(candidate[i]) == lower(pc))
+            else {
+                viable = false;
+                break;
+            };
+            let skipped = pos - last - 1;
+            if skipped > max_gap {
+                viable = false;
+                break;
+            }
+            if skipped == 0 {
+                consecutive += 1;
+            }
+            skipped_total += skipped;
+            last = pos;
+            matched += 1;
+        }
+        if viable && matched == prefix.len() {
+            let span = last - anchor + 1;
+            let mut bonus = (consecutive.min(6) as f64)
+                + (1.0 - (skipped_total as f64 / span.max(1) as f64).min(1.0)) * 2.0;
+            let boundary = anchor == 0 || !candidate[anchor - 1].is_ascii_alphanumeric();
+            if boundary {
+                bonus += 2.0;
+            }
+            return Some(bonus);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +260,9 @@ mod tests {
 
     fn empty_rejected() -> HashMap<String, Usage> {
         HashMap::new()
+    }
+    fn smart() -> FuzzyPreset {
+        FuzzyPreset::Smart
     }
     #[test]
     fn exact_prefix_beats_fuzzy() {
@@ -192,6 +274,7 @@ mod tests {
             "--verb",
             &HashMap::new(),
             true,
+            smart(),
             &empty_rejected(),
         );
         assert_eq!(r[0].value, "--verbose");
@@ -206,6 +289,7 @@ mod tests {
             "d",
             &HashMap::new(),
             true,
+            smart(),
             &empty_rejected(),
         );
         assert_eq!(r[0].source, Source::Dynamic);
@@ -221,6 +305,7 @@ mod tests {
             "",
             &HashMap::new(),
             true,
+            smart(),
             &empty_rejected(),
         );
         assert_eq!(ranked[0].value, "install");
@@ -238,6 +323,7 @@ mod tests {
             "--",
             &HashMap::new(),
             true,
+            smart(),
             &empty_rejected(),
         );
         assert_eq!(ranked[0].value, "--debug");
@@ -254,6 +340,7 @@ mod tests {
             "",
             &HashMap::new(),
             true,
+            smart(),
             &empty_rejected(),
         );
         assert_eq!(ranked[0].value, "install");
@@ -276,7 +363,14 @@ mod tests {
                 last_used: now,
             },
         )]);
-        let ranked = rank(vec![common, habit], "", &usage, true, &empty_rejected());
+        let ranked = rank(
+            vec![common, habit],
+            "",
+            &usage,
+            true,
+            smart(),
+            &empty_rejected(),
+        );
         assert_eq!(ranked[0].value, "update");
     }
 
@@ -290,6 +384,7 @@ mod tests {
             "--dang",
             &HashMap::new(),
             true,
+            smart(),
             &empty_rejected(),
         );
         assert_eq!(r.len(), 1);
@@ -316,10 +411,99 @@ mod tests {
             "",
             &HashMap::new(),
             true,
+            smart(),
             &rejected,
         );
         assert_eq!(ranked[0].value, "alpha", "dismissed beta drops below alpha");
-        let listed = rank_for_list(vec![a, b], "", &HashMap::new(), true, &rejected);
+        let listed = rank_for_list(vec![a, b], "", &HashMap::new(), true, smart(), &rejected);
         assert_eq!(listed.len(), 2, "rejection hides nothing from the TAB list");
+    }
+
+    #[test]
+    fn fuzzy_presets_bound_how_far_typed_letters_sprawl() {
+        // One candidate per rung of the ladder: `gl` with the `l` sitting
+        // adjacent, four characters away, and seven characters away.
+        let adjacent = Candidate::new("glossary", "", Source::History);
+        let mid = Candidate::new("git clone url", "", Source::History);
+        // Four spaces put the `l` seven characters past the `g`: inside
+        // loose's bound of 8, outside smart's 4.
+        let far = Candidate::new("git    clone", "", Source::History);
+        // The explicit TAB list is where bounded-fuzzy alternatives surface;
+        // inline ghost mode additionally requires shared typed prefixes.
+        // Unmatched candidates stay listed but receive no fuzzy credit
+        // (their raw base score is untouched), so the preset's effect shows
+        // up as score deltas. Note the two gates are independent by design:
+        // the sprawl bound decides *candidacy* (bounded_subsequence), while
+        // Jaro-Winkler decides *quality* -- a legal-but-sprawling match in a
+        // long candidate can still fail quality, which only ever hides a
+        // ghost, never fabricates one.
+        let scored = |preset: FuzzyPreset| {
+            rank_for_list(
+                vec![adjacent.clone(), mid.clone(), far.clone()],
+                "gl",
+                &HashMap::new(),
+                true,
+                preset,
+                &empty_rejected(),
+            )
+            .into_iter()
+            .map(|c| (c.value, c.score))
+            .collect::<Vec<_>>()
+        };
+        let base = Source::History.base_confidence() * TRUST_WEIGHT;
+        let credit = |rows: &[(String, f64)], value: &str| {
+            rows.iter()
+                .find(|(v, _)| v == value)
+                .map(|(_, s)| *s - base)
+                .unwrap_or(f64::NEG_INFINITY)
+        };
+        let tight = scored(FuzzyPreset::Tight);
+        assert!(credit(&tight, "glossary") > 5.0, "adjacent rung matches");
+        assert!(
+            credit(&tight, "git clone url") < 5.0 && credit(&tight, "git    clone") < 5.0,
+            "tight grants nothing to gaps beyond 1"
+        );
+        let smart_rows = scored(FuzzyPreset::Smart);
+        assert!(
+            credit(&smart_rows, "git clone url") > 5.0,
+            "gap 4 fits smart"
+        );
+        assert!(
+            credit(&smart_rows, "git    clone") < 5.0,
+            "gap 7 exceeds smart"
+        );
+        // Prefix-exact hits never enter the fuzzy branch at all.
+        let r = rank(
+            vec![Candidate::new("gl", "", Source::History)],
+            "gl",
+            &HashMap::new(),
+            true,
+            FuzzyPreset::Tight,
+            &empty_rejected(),
+        );
+        assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn bounded_subsequence_prefers_compact_and_boundary_matches() {
+        let chars: Vec<char> = "git checkout".chars().collect();
+        let gco: Vec<char> = "gco".chars().collect();
+        let bonus = bounded_subsequence(&chars, &gco, 4).expect("smart matches gco");
+        assert!(bonus > 0.0);
+        // No match once the bound forbids the gaps entirely.
+        assert!(bounded_subsequence(&chars, &gco, 0).is_none());
+        // Prefix longer than any in-order path is a miss.
+        let long: Vec<char> = "zzzz".chars().collect();
+        assert!(bounded_subsequence(&chars, &long, 8).is_none());
+        // Empty prefix trivially matches.
+        assert_eq!(bounded_subsequence(&chars, &[], 4), Some(0.0));
+        // The loose bound accepts gaps that tight and smart must refuse:
+        // `l` sits seven characters past `g` here.
+        let far: Vec<char> = "git    clone".chars().collect();
+        let gl: Vec<char> = "gl".chars().collect();
+        assert!(bounded_subsequence(&far, &gl, 1).is_none());
+        assert!(bounded_subsequence(&far, &gl, 4).is_none());
+        assert!(bounded_subsequence(&far, &gl, 7).is_some());
+        assert!(bounded_subsequence(&far, &gl, 8).is_some());
     }
 }
