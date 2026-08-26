@@ -68,6 +68,9 @@ pub enum Source {
     /// A common continuation from the global prior table, offered when the
     /// tool's own help did not spell one out (see `crate::priors`).
     Prior,
+    /// An answer from an external completion engine (`carapace-bin`): exact
+    /// schema knowledge for a command this machine has a completer for.
+    Carapace,
     History,
 }
 
@@ -76,6 +79,10 @@ impl Source {
         match self {
             Self::Native => 0.98,
             Self::Dynamic => 0.94,
+            // Structured, command-specific knowledge from an external
+            // completer: more trustworthy than parsed help text, a notch below
+            // this tool's own dynamic answers and native protocols.
+            Self::Carapace => 0.92,
             Self::OfficialDocs => 0.91,
             Self::LocalHelp => 0.88,
             Self::Filesystem => 0.90,

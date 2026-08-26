@@ -6,14 +6,15 @@ Adaptive is a shell-independent Rust library with a thin CLI protocol. Shells se
 
 1. `parser` tokenizes incomplete quoted input without evaluating shell syntax.
 2. `providers` resolve dynamic argument values from narrow safe sources (PATH commands, Git branches, npm scripts, SSH hosts, Docker, forge URLs, the filesystem).
-3. `history` contributes candidates from the learned usage profile: next-token predictions for the exact typed command path, bare-prompt command predictions from directory affinity plus previous-command sequences plus global frequency, and full-line chain completions. These merge with provider results at every position rather than acting only as a fallback.
-4. `discovery` resolves only executable metadata and bounded informational help operations when no contextual provider spoke.
-5. `help_parser` extracts uncertain schema items with an explicit confidence score.
-6. `native` may prefer an adapter's machine-oriented protocol when its signature is detected.
-7. `priors` supplies global usage defaults for the exact position being completed, and offers common subcommands for positions a tool's own help left undocumented.
-8. `ranking` combines position validity (source confidence and candidate kind), global priors, personal frequency and recency from the profile's precomputed indexes, explicit accept/reject feedback, and prefix/fuzzy quality. Flags are demoted unless the current token begins with `-`, so a position that accepts a subcommand answers with subcommands and lists flags after them.
-9. The engine echoes a `context_key` identifying this exact completion position; frontends return it with accept/reject feedback so learning lands back on the same context.
-10. The response is serialized to JSON or sanitized Zsh records.
+3. `carapace` (optional) consults an installed `carapace-bin` for exact command knowledge — subcommands, flags, enum values, positional arguments — for the hundreds of CLIs it ships completers for. Answers are cached against a fingerprint of the carapace binary and capped by a hard subprocess timeout; where Carapace spoke, help parsing is skipped. It is never required: when absent or disabled every other layer runs unchanged.
+4. `history` contributes candidates from the learned usage profile: next-token predictions for the exact typed command path, bare-prompt command predictions from directory affinity plus previous-command sequences plus global frequency, and full-line chain completions. These merge with provider results at every position rather than acting only as a fallback.
+5. `discovery` resolves only executable metadata and bounded informational help operations when no contextual provider spoke.
+6. `help_parser` extracts uncertain schema items with an explicit confidence score.
+7. `native` may prefer an adapter's machine-oriented protocol when its signature is detected.
+8. `priors` supplies global usage defaults for the exact position being completed, and offers common subcommands for positions a tool's own help left undocumented.
+9. `ranking` combines position validity (source confidence and candidate kind), global priors, personal frequency and recency from the profile's precomputed indexes, explicit accept/reject feedback, and prefix/fuzzy quality. Flags are demoted unless the current token begins with `-`, so a position that accepts a subcommand answers with subcommands and lists flags after them. Personal frequency and recency deliberately outweigh source trust, so learned habits rank above anything Carapace or help text offers.
+10. The engine echoes a `context_key` identifying this exact completion position; frontends return it with accept/reject feedback so learning lands back on the same context.
+11. The response is serialized to JSON or sanitized Zsh records.
 
 ### Proactive prediction
 

@@ -11,6 +11,13 @@
 #                   with nothing to accept
 #   (JUST_ACCEPTED is simply IDLE again: acceptance never carries forward
 #    permission to keep auto-suggesting without new user intent)
+#
+# Transport: when the completion daemon owns its socket, every keystroke is
+# one sub-millisecond request over a persistent Unix-socket connection --
+# no process is spawned per keystroke. When the daemon is unavailable the
+# frontend transparently falls back to spawning one-shot `adaptive query`
+# processes, exactly as before. Both paths deliver the same sanitized TSV
+# payload; only the framing differs.
 [[ -o interactive ]] || return 0
 
 : ${ADAPTIVE_GHOST_TEXT:=1}
@@ -22,8 +29,31 @@
 : ${ADAPTIVE_MENU_NEXT_KEY:=^[[C}
 : ${ADAPTIVE_MENU_PREV_KEY:=^[[D}
 : ${ADAPTIVE_DISMISS_KEY:=^[}
+: ${ADAPTIVE_SUPPRESS_KEY:=^X}
+: ${ADAPTIVE_CYCLE_FUZZY_KEY:=^[[1;2C}
+: ${ADAPTIVE_CYCLE_FUZZY_BACK_KEY:=^[[1;2D}
+: ${ADAPTIVE_TOGGLE_EMPTY_KEY:=^[[1;2A}
+
+# The daemon socket path: an explicitly exported ADAPTIVE_SOCK wins, then
+# ADAPTIVE_DATA_DIR (sandboxed setups), then the default baked in at
+# generation time.
+if [[ -n "$ADAPTIVE_DATA_DIR" ]]; then
+  ADAPTIVE_SOCK="$ADAPTIVE_DATA_DIR/adaptive.sock"
+elif [[ -z "$ADAPTIVE_SOCK" ]]; then
+  ADAPTIVE_SOCK="${ADAPTIVE_DEFAULT_SOCK:-${XDG_DATA_HOME:-$HOME/.local/share}/adaptive/adaptive.sock}"
+fi
+
+# Lets one-shot query processes start the daemon when nobody is home yet.
+export ADAPTIVE_AUTO_DAEMON=1
+
+zmodload zsh/datetime 2>/dev/null
 
 typeset -g ADAPTIVE_QUERY_FD="" ADAPTIVE_QUERY_BUFFER="" ADAPTIVE_QUERY_CURSOR=0 ADAPTIVE_QUERY_KIND="ghost"
+typeset -g ADAPTIVE_QUERY_MODE="" ADAPTIVE_SOCK_FD=0
+typeset -gi ADAPTIVE_REQ_ID=0 ADAPTIVE_QUERY_ID=0
+typeset -gi ADAPTIVE_INFLIGHT=0 ADAPTIVE_PENDING=0
+typeset -gF ADAPTIVE_INFLIGHT_AT=0
+typeset -gi ADAPTIVE_SUPPRESSED=0
 typeset -g ADAPTIVE_PREFIX_LEN=0 ADAPTIVE_INDEX=1 ADAPTIVE_SELECTOR_ACTIVE=0 ADAPTIVE_LIST_INDEX=1
 typeset -g ADAPTIVE_CONTEXT_KEY="" ADAPTIVE_PREV_CMD=""
 typeset -ga ADAPTIVE_VALUES ADAPTIVE_DISPLAYS ADAPTIVE_DESCRIPTIONS ADAPTIVE_SOURCES
@@ -33,7 +63,6 @@ typeset -ga ADAPTIVE_OWN_HIGHLIGHTS region_highlight
 # Opt-in diagnostics: export ADAPTIVE_DEBUG_LOG=/tmp/adaptive-debug.log before
 # `exec zsh` to get a trace of state transitions for bug reports. No-op when
 # unset.
-[[ -n "$ADAPTIVE_DEBUG_LOG" ]] && zmodload zsh/datetime 2>/dev/null
 _adaptive_log() {
   [[ -n "$ADAPTIVE_DEBUG_LOG" ]] || return 0
   print -r -- "$EPOCHREALTIME $*" >>"$ADAPTIVE_DEBUG_LOG"
@@ -79,6 +108,8 @@ _adaptive_render_current() {
   _adaptive_clear_ghost
   (( ${#ADAPTIVE_VALUES} )) || { _adaptive_log "render_current gate=fail reason=no_values"; return 1 }
   (( CURSOR == $#BUFFER )) || { _adaptive_log "render_current gate=fail reason=cursor_not_at_end"; return 1 }
+  # A late ghost answer must never repaint over an open candidate list.
+  (( ! ADAPTIVE_SELECTOR_ACTIVE )) || { _adaptive_log "render_current gate=fail reason=selector_active"; return 1 }
   [[ "$ADAPTIVE_GHOST_TEXT" == 1 ]] || { _adaptive_log "render_current gate=fail reason=ghost_text_disabled"; return 1 }
   local typed candidate="${ADAPTIVE_VALUES[ADAPTIVE_INDEX]}"
   # $LBUFFER[-0,-1] is NOT empty in zsh -- negative zero slices as the whole
@@ -134,37 +165,155 @@ _adaptive_render_selector() {
   return 0
 }
 
-# ---- state lifecycle -------------------------------------------------------
+# ---- transport ---------------------------------------------------------------
+
+# Escapes one tab-separated field into $REPLY: the four significant
+# characters become backslash forms and any other control character is
+# dropped -- mirroring the codec the daemon speaks. Pure parameter expansion
+# on purpose: command substitution would fork once per field per keystroke,
+# and the persistent socket exists precisely so keystrokes spawn nothing.
+_adaptive_escape_into() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//$'\t'/\\t}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  REPLY=${s//[[:cntrl:]]/}
+}
+
+# Reverses the daemon's wire escaping for one received field into $REPLY.
+# The engine strips control characters from candidate values before they are
+# framed, so on this path the only escape that can occur is a doubled
+# backslash; decoding is therefore one unambiguous substitution -- and pure
+# expansion, like its encoder twin. Applying it ONLY to socket payloads keeps
+# both transports byte-identical after framing: the fork path's `--format
+# zsh` output is already unescaped text, so without this decode an accepted
+# completion could insert `spaced\\ dir` (two words) where the fork path
+# inserts `spaced\ dir`.
+_adaptive_unescape_into() {
+  local two=$'\\\\' one=$'\\'
+  REPLY=${1//$two/$one}
+}
+
+_adaptive_daemon_connect() {
+  (( ADAPTIVE_SOCK_FD )) && return 0
+  zmodload zsh/net/socket 2>/dev/null || return 1
+  [[ -S "$ADAPTIVE_SOCK" ]] || return 1
+  zsocket "$ADAPTIVE_SOCK" 2>/dev/null || return 1
+  # zsocket hands the connected descriptor back in $REPLY.
+  ADAPTIVE_SOCK_FD=$REPLY
+  return 0
+}
+
+# One-shot control connection for fire-and-forget reports (record,
+# feedback). Opens, sends, reads the single-line acknowledgement, closes.
+# Status codes let callers distinguish "never arrived" from "delivered but
+# slow": 0 acknowledged; 1 sent but no timely ack -- the daemon may still
+# have applied it, so callers must NOT retry (a retried record would
+# double-count a habit); 2 unreachable/send-failed -- safe to fall back to
+# the CLI, which owns its own persistence locking.
+_adaptive_sideband_op() {
+  zmodload zsh/net/socket 2>/dev/null || return 2
+  [[ -S "$ADAPTIVE_SOCK" ]] || return 2
+  local fd reply="" enc="" part
+  zsocket "$ADAPTIVE_SOCK" 2>/dev/null || return 2
+  fd=$REPLY
+  for part in "$@"; do
+    _adaptive_escape_into "$part"
+    enc+="$REPLY"$'\t'
+  done
+  if ! print -r -- "${enc%$'\t'}" >&$fd 2>/dev/null; then
+    exec {fd}<&- 2>/dev/null
+    return 2
+  fi
+  IFS= read -t 1 -r reply <&$fd 2>/dev/null
+  exec {fd}<&- 2>/dev/null
+  [[ "$reply" == ok* ]] && return 0
+  return 1
+}
+
+# Sends one query over the persistent daemon connection. Returns 1 (with
+# the caller falling back) when the daemon vanished mid-session.
+_adaptive_sock_send() {
+  local list_flag=$1 esc_buffer esc_cwd esc_prev tab=$'\t'
+  _adaptive_escape_into "$BUFFER"; esc_buffer=$REPLY
+  _adaptive_escape_into "$PWD"; esc_cwd=$REPLY
+  _adaptive_escape_into "$ADAPTIVE_PREV_CMD"; esc_prev=$REPLY
+  print -r -- "query${tab}$ADAPTIVE_QUERY_ID${tab}${list_flag}${tab}$esc_buffer${tab}$CURSOR${tab}$esc_cwd${tab}$esc_prev${tab}zsh${tab}0" >& $ADAPTIVE_SOCK_FD 2>/dev/null
+}
+
+_adaptive_daemon_lost() {
+  _adaptive_log "daemon_lost"
+  if (( ADAPTIVE_SOCK_FD )); then
+    exec {ADAPTIVE_SOCK_FD}<&- 2>/dev/null
+    ADAPTIVE_SOCK_FD=0
+  fi
+}
 
 _adaptive_cancel_query() {
   if [[ -n "$ADAPTIVE_QUERY_FD" ]]; then
     zle -F "$ADAPTIVE_QUERY_FD" 2>/dev/null
-    exec {ADAPTIVE_QUERY_FD}<&- 2>/dev/null
+    # Only fork-mode pipes are ours to close; the daemon socket persists
+    # across queries and must survive cancellation.
+    if [[ "$ADAPTIVE_QUERY_MODE" != "sock" ]]; then
+      exec {ADAPTIVE_QUERY_FD}<&- 2>/dev/null
+    fi
     ADAPTIVE_QUERY_FD=""
   fi
+}
+
+# Retires whatever request is in flight without touching rendered state:
+# unregisters its watcher, and bumps the request id so any response still
+# crossing the wire drains as stale instead of repainting a view the user
+# has since replaced.
+_adaptive_retire_inflight() {
+  _adaptive_cancel_query
+  (( ++ADAPTIVE_REQ_ID ))
+  ADAPTIVE_QUERY_ID=$ADAPTIVE_REQ_ID
+  ADAPTIVE_INFLIGHT=0
+  ADAPTIVE_PENDING=0
 }
 
 _adaptive_reset() {
   _adaptive_close_selector
   _adaptive_clear_ghost
-  _adaptive_cancel_query
+  _adaptive_retire_inflight
   ADAPTIVE_QUERY_BUFFER=""
   ADAPTIVE_QUERY_CURSOR=0
   ADAPTIVE_INDEX=1
   ADAPTIVE_VALUES=(); ADAPTIVE_DISPLAYS=(); ADAPTIVE_DESCRIPTIONS=(); ADAPTIVE_SOURCES=()
 }
 
-_adaptive_load_results() {
-  local fd=$1 value display description source count request context_key
+# Applies an already-header-parsed TSV payload to whichever view requested
+# it. Exactly `count` rows are read -- sockets never EOF, so a counted loop
+# is the only safe termination here. A short read (truncated payload) clears
+# both views rather than rendering a half-applied answer. `decode` marks
+# socket payloads, whose fields are wire-escaped (the fork path delivers
+# unescaped text).
+_adaptive_apply_results() {
+  local fd=$1 count=$2 decode=${3:-0} i value display description source got=0
   local -a values displays descriptions sources
-  if IFS=$'\t' read -r request ADAPTIVE_PREFIX_LEN count context_key <&$fd; then
-    ADAPTIVE_CONTEXT_KEY="${context_key}"
-    while IFS=$'\t' read -r value display description source <&$fd; do
+  # Two seconds per row is far beyond any healthy daemon round trip, yet
+  # finite: a daemon dying mid-payload must never freeze the editor on a
+  # socket read that would otherwise have no EOF to stop it.
+  for (( i = 0; i < count; i++ )); do
+    if IFS=$'\t' read -t 2 -r value display description source <&$fd; then
+      if (( decode )); then
+        _adaptive_unescape_into "$value"; value=$REPLY
+        _adaptive_unescape_into "$display"; display=$REPLY
+        _adaptive_unescape_into "$description"; description=$REPLY
+      fi
       values+=("$value"); displays+=("$display")
       descriptions+=("$description"); sources+=("$source")
-    done
-  else
-    ADAPTIVE_PREFIX_LEN=0
+      (( ++got ))
+    else
+      break
+    fi
+  done
+  if (( got < count )); then
+    ADAPTIVE_VALUES=(); ADAPTIVE_DISPLAYS=(); ADAPTIVE_DESCRIPTIONS=(); ADAPTIVE_SOURCES=()
+    ADAPTIVE_LIST_VALUES=(); ADAPTIVE_LIST_DISPLAYS=(); ADAPTIVE_LIST_DESCRIPTIONS=(); ADAPTIVE_LIST_SOURCES=()
+    return 1
   fi
   if [[ "$ADAPTIVE_QUERY_KIND" == "selector" ]]; then
     ADAPTIVE_LIST_VALUES=("${values[@]}"); ADAPTIVE_LIST_DISPLAYS=("${displays[@]}")
@@ -175,24 +324,44 @@ _adaptive_load_results() {
     ADAPTIVE_DESCRIPTIONS=("${descriptions[@]}"); ADAPTIVE_SOURCES=("${sources[@]}")
     ADAPTIVE_INDEX=1
   fi
-  zle -F "$fd" 2>/dev/null
-  exec {fd}<&-
-  [[ "$ADAPTIVE_QUERY_FD" == "$fd" ]] && ADAPTIVE_QUERY_FD=""
 }
 
-# Async result handler: only apply results if the buffer is still exactly
-# what it was when the query was issued (a cheap generation check), so a
-# slow/late response can never clobber what the user is looking at now.
-_adaptive_ready() {
+_adaptive_finish_query() {
   local fd=$1
-  if [[ "$BUFFER" != "$ADAPTIVE_QUERY_BUFFER" ]] || (( CURSOR != ADAPTIVE_QUERY_CURSOR )); then
-    zle -F "$fd" 2>/dev/null
+  zle -F "$fd" 2>/dev/null
+  if [[ "$ADAPTIVE_QUERY_MODE" == "fork" ]]; then
     exec {fd}<&- 2>/dev/null
-    [[ "$ADAPTIVE_QUERY_FD" == "$fd" ]] && ADAPTIVE_QUERY_FD=""
+  fi
+  [[ "$ADAPTIVE_QUERY_FD" == "$fd" ]] && ADAPTIVE_QUERY_FD=""
+  ADAPTIVE_INFLIGHT=0
+  # A keystroke arrived while this query ran: issue exactly one follow-up
+  # for the newest buffer instead of having queued a process per character.
+  if (( ADAPTIVE_PENDING )); then
+    ADAPTIVE_PENDING=0
+    _adaptive_schedule
+  fi
+}
+
+# Async result handler for the fallback (process-spawn) path. Only applies
+# results when the buffer is still what it was when the query was issued.
+# Fork header: request_id<TAB>prefix_len<TAB>count<TAB>context_key
+adaptive-ready() {
+  local fd=$1 count context_key request_id
+  if [[ "$BUFFER" != "$ADAPTIVE_QUERY_BUFFER" ]] || (( CURSOR != ADAPTIVE_QUERY_CURSOR )); then
+    _adaptive_finish_query "$fd"
     return
   fi
   local kind="$ADAPTIVE_QUERY_KIND"
-  _adaptive_load_results "$fd"
+  if IFS=$'\t' read -t 2 -r request_id ADAPTIVE_PREFIX_LEN count context_key <&$fd; then
+    ADAPTIVE_CONTEXT_KEY="${context_key}"
+    _adaptive_apply_results "$fd" "$count"
+  else
+    # Transport died before the header: nothing may render from a previous
+    # query's arrays.
+    ADAPTIVE_PREFIX_LEN=0
+    ADAPTIVE_VALUES=(); ADAPTIVE_DISPLAYS=(); ADAPTIVE_DESCRIPTIONS=(); ADAPTIVE_SOURCES=()
+    ADAPTIVE_LIST_VALUES=(); ADAPTIVE_LIST_DISPLAYS=(); ADAPTIVE_LIST_DESCRIPTIONS=(); ADAPTIVE_LIST_SOURCES=()
+  fi
   if [[ "$kind" == "selector" ]]; then
     if (( ${#ADAPTIVE_LIST_VALUES} )); then
       ADAPTIVE_SELECTOR_ACTIVE=1
@@ -201,13 +370,77 @@ _adaptive_ready() {
     else
       ADAPTIVE_SELECTOR_ACTIVE=0
       _adaptive_log "ready kind=selector list_values=0 fallback=native_completion"
+      _adaptive_finish_query "$fd"
       zle .expand-or-complete
+      return
     fi
   else
     _adaptive_log "ready kind=ghost values=${#ADAPTIVE_VALUES} prefix_len=$ADAPTIVE_PREFIX_LEN buffer=[$BUFFER]"
     _adaptive_auto_selector_after_slash || _adaptive_render_current
   fi
+  _adaptive_finish_query "$fd"
   zle -R
+}
+
+# Async result handler for the daemon path. The socket never EOFs and
+# responses are strictly ordered, so this is a non-blocking pump: every
+# wakeup drains whatever complete answers are queued, discarding those whose
+# request id no longer matches (superseded keystrokes) until ours shows up.
+# Sock header: res<TAB>id<TAB>request_id<TAB>prefix_len<TAB>count<TAB>context_key
+adaptive-daemon-ready() {
+  local fd=$1 line row i kind id count prefix_len context_key
+  local -a head
+  while IFS= read -t 0 -r line <&$fd; do
+    head=("${(ps:\t:)line}")
+    id=${head[2]}
+    case ${head[1]} in
+      err)
+        if (( id == ADAPTIVE_QUERY_ID )); then
+          _adaptive_finish_query "$fd"
+          zle -R
+          return
+        fi
+        ;;
+      res)
+        count=${head[5]}
+        if (( id == ADAPTIVE_QUERY_ID )); then
+          # Ours: the rows were flushed together with the header, so a
+          # short blocking read for exactly `count` lines cannot stall.
+          kind="$ADAPTIVE_QUERY_KIND"
+          prefix_len=${head[4]}
+          context_key=${head[6]}
+          _adaptive_unescape_into "$context_key"; ADAPTIVE_CONTEXT_KEY="$REPLY"
+          ADAPTIVE_PREFIX_LEN=$prefix_len
+          _adaptive_apply_results "$fd" "$count" 1
+          if [[ "$BUFFER" != "$ADAPTIVE_QUERY_BUFFER" ]] || (( CURSOR != ADAPTIVE_QUERY_CURSOR )); then
+            # Answer for a since-superseded keystroke: retire the request so
+            # a pending re-query actually fires instead of stranding state.
+            _adaptive_finish_query "$fd"
+            continue
+          fi
+          if [[ "$kind" == "selector" ]]; then
+            if (( ${#ADAPTIVE_LIST_VALUES} )); then
+              ADAPTIVE_SELECTOR_ACTIVE=1
+              _adaptive_render_selector
+            else
+              ADAPTIVE_SELECTOR_ACTIVE=0
+              _adaptive_finish_query "$fd"
+              zle .expand-or-complete
+              return
+            fi
+          else
+            _adaptive_auto_selector_after_slash || _adaptive_render_current
+          fi
+          _adaptive_finish_query "$fd"
+          zle -R
+          return
+        fi
+        # Superseded: drain its rows and keep pumping. Bounded by a timeout
+        # like every other counted read so a truncated payload cannot hang.
+        for (( i = 0; i < count; i++ )); do IFS= read -t 2 -r row <&$fd || break; done
+        ;;
+    esac
+  done
 }
 
 # A trailing "/" is a structural boundary (finished typing an owner, a
@@ -247,35 +480,104 @@ _adaptive_open_selector_from_ghost() {
   _adaptive_render_selector
 }
 
+# Issues a ghost query for the current buffer: over the daemon socket when
+# connected, otherwise as a one-shot background process. Rapid typing
+# coalesces -- while a query is in flight, further keystrokes merely mark a
+# pending re-query instead of piling up work.
 _adaptive_schedule() {
+  (( ADAPTIVE_SUPPRESSED )) && return 0
+  local now=${EPOCHREALTIME:-$SECONDS}
+  if (( ADAPTIVE_INFLIGHT )); then
+    if (( (now - ADAPTIVE_INFLIGHT_AT) < 0.05 )); then
+      ADAPTIVE_PENDING=1
+      return 0
+    fi
+  fi
   _adaptive_cancel_query
+  ADAPTIVE_INFLIGHT=1
+  ADAPTIVE_INFLIGHT_AT=$now
+  (( ++ADAPTIVE_REQ_ID ))
+  ADAPTIVE_QUERY_ID=$ADAPTIVE_REQ_ID
   ADAPTIVE_QUERY_KIND="ghost"
   ADAPTIVE_QUERY_BUFFER="$BUFFER"
   ADAPTIVE_QUERY_CURSOR=$CURSOR
-  exec {ADAPTIVE_QUERY_FD}< <(adaptive query --format zsh --buffer "$BUFFER" --cursor "$CURSOR" --cwd "$PWD" --prev "$ADAPTIVE_PREV_CMD" 2>/dev/null)
-  zle -F -w "$ADAPTIVE_QUERY_FD" adaptive-ready
+  if _adaptive_daemon_connect; then
+    ADAPTIVE_QUERY_MODE="sock"
+    ADAPTIVE_QUERY_FD=$ADAPTIVE_SOCK_FD
+    _adaptive_log "schedule mode=sock id=$ADAPTIVE_QUERY_ID"
+    if ! _adaptive_sock_send 0; then
+      _adaptive_daemon_lost
+      _adaptive_invalidate_query
+    fi
+  fi
+  if [[ "$ADAPTIVE_QUERY_MODE" != "sock" ]]; then
+    _adaptive_spawn_query 0
+  fi
+  if [[ -n "$ADAPTIVE_QUERY_FD" ]]; then
+    if [[ "$ADAPTIVE_QUERY_MODE" == "sock" ]]; then
+      zle -F -w "$ADAPTIVE_QUERY_FD" adaptive-daemon-ready
+    else
+      zle -F -w "$ADAPTIVE_QUERY_FD" adaptive-ready
+    fi
+  fi
 }
 
 # Explicit "what can go here?" request: only issued when TAB is pressed with
 # no ghost suggestion visible to accept.
 _adaptive_schedule_selector() {
+  (( ADAPTIVE_SUPPRESSED )) && { zle .expand-or-complete; return }
   _adaptive_cancel_query
+  (( ++ADAPTIVE_REQ_ID ))
+  ADAPTIVE_QUERY_ID=$ADAPTIVE_REQ_ID
   ADAPTIVE_QUERY_KIND="selector"
   ADAPTIVE_QUERY_BUFFER="$BUFFER"
   ADAPTIVE_QUERY_CURSOR=$CURSOR
-  exec {ADAPTIVE_QUERY_FD}< <(adaptive query --format zsh --list --buffer "$BUFFER" --cursor "$CURSOR" --cwd "$PWD" --prev "$ADAPTIVE_PREV_CMD" 2>/dev/null)
-  zle -F -w "$ADAPTIVE_QUERY_FD" adaptive-ready
+  ADAPTIVE_INFLIGHT=1
+  ADAPTIVE_INFLIGHT_AT=${EPOCHREALTIME:-$SECONDS}
+  if _adaptive_daemon_connect; then
+    ADAPTIVE_QUERY_MODE="sock"
+    ADAPTIVE_QUERY_FD=$ADAPTIVE_SOCK_FD
+    if _adaptive_sock_send 1; then
+      zle -F -w "$ADAPTIVE_QUERY_FD" adaptive-daemon-ready
+      return
+    fi
+    _adaptive_daemon_lost
+  fi
+  _adaptive_spawn_query 1
+  [[ -n "$ADAPTIVE_QUERY_FD" ]] && zle -F -w "$ADAPTIVE_QUERY_FD" adaptive-ready
+}
+
+# Clears in-flight bookkeeping when a send failed before anything was asked.
+_adaptive_invalidate_query() {
+  ADAPTIVE_QUERY_MODE="fork"
+  ADAPTIVE_QUERY_FD=""
+  ADAPTIVE_INFLIGHT=0
+  ADAPTIVE_PENDING=0
+}
+
+# Fork-mode transport: one-shot query process, watched via its stdout pipe.
+_adaptive_spawn_query() {
+  local list_flag=$1 bin="${ADAPTIVE_BIN_PATH:-adaptive}"
+  ADAPTIVE_QUERY_MODE="fork"
+  exec {ADAPTIVE_QUERY_FD}< <("$bin" query --format zsh $( [[ $list_flag == 1 ]] && print -- --list ) --buffer "$BUFFER" --cursor "$CURSOR" --cwd "$PWD" --prev "$ADAPTIVE_PREV_CMD" 2>/dev/null)
+  _adaptive_log "schedule mode=fork id=$ADAPTIVE_QUERY_ID"
 }
 
 # ---- learning feedback -------------------------------------------------------
-# Fire-and-forget reports of explicit accept/dismiss decisions. The engine
-# echoes a context key with every response; sending it back lets the ranking
-# layer strengthen or demote the exact suggestion at the exact position,
-# without the shell ever re-deriving engine internals.
+# Fire-and-forget reports of explicit accept/dismiss decisions and of
+# executed lines. Routed through the daemon when it is reachable (its
+# in-memory model learns immediately), otherwise through the CLI in the
+# background exactly as before. The engine echoes a context key with every
+# response; sending it back lets ranking strengthen or demote the exact
+# suggestion at the exact position.
 _adaptive_send_feedback() {
-  local verdict="$1" value="$2" key="$3"
+  local verdict="$1" value="$2" key="$3" bin="${ADAPTIVE_BIN_PATH:-adaptive}"
   [[ -n "$key" && -n "$value" ]] || return 0
-  adaptive history feedback "$verdict" --context "$key" --value "$value" >/dev/null 2>&1 &!
+  _adaptive_sideband_op feedback 0 "$verdict" "$key" "$value"
+  # Only an unreachable daemon (status 2) falls back to the CLI; a slow
+  # acknowledgement (status 1) means the report was likely applied, and a
+  # retry would double-count the habit.
+  (( $? == 2 )) && "$bin" history feedback "$verdict" --context "$key" --value "$value" >/dev/null 2>&1 &!
 }
 
 # ---- typing -----------------------------------------------------------------
@@ -340,6 +642,10 @@ adaptive-browse() {
   if (( ADAPTIVE_SELECTOR_ACTIVE )); then
     return 0
   fi
+  # The fast path reuses the ghost's own ranked candidates, but any query
+  # still in flight belongs to an older keystroke -- retire it so its late
+  # answer cannot repaint over the list we are about to open.
+  _adaptive_retire_inflight
   _adaptive_open_selector_from_ghost && return
   _adaptive_reset
   _adaptive_schedule_selector
@@ -396,14 +702,57 @@ adaptive-dismiss() {
   fi
 }
 
+# Ctrl-X: suppress suggestions for this whole shell session (toggle). Unlike
+# dismiss -- which only clears the current line and counts as a rejection --
+# suppression is a neutral pause, remembered until toggled back or the shell
+# exits.
+adaptive-toggle-suppress() {
+  ADAPTIVE_SUPPRESSED=$(( 1 - ADAPTIVE_SUPPRESSED ))
+  _adaptive_reset
+  if (( ADAPTIVE_SUPPRESSED )); then
+    zle -M "adaptive: suggestions suppressed (press $ADAPTIVE_SUPPRESS_KEY again to restore)"
+  else
+    zle -M "adaptive: suggestions on"
+    _adaptive_schedule
+  fi
+  zle -R
+}
+
+# Shift+Right / Shift+Left: step the fuzzy sprawl ladder forward/backward
+# (tight -> smart -> loose -> tight). The CLI persists the choice globally
+# and nudges the running daemon; the current ghost repaints under the new
+# preset in the same frame.
+_adaptive_cycle_fuzzy_impl() {
+  local out bin="${ADAPTIVE_BIN_PATH:-adaptive}"
+  out=$("$bin" fuzzy "$1" 2>/dev/null </dev/null)
+  zle -M "adaptive: ${out:-fuzzy unchanged}"
+  _adaptive_reset
+  (( ADAPTIVE_SUPPRESSED )) || _adaptive_schedule
+  zle -R
+}
+adaptive-cycle-fuzzy() { _adaptive_cycle_fuzzy_impl cycle }
+adaptive-cycle-fuzzy-back() { _adaptive_cycle_fuzzy_impl back }
+
+# Shift+Up: flip whole-command prediction on an untouched prompt. Persisted
+# global setting; takes effect immediately.
+adaptive-toggle-empty() {
+  local out bin="${ADAPTIVE_BIN_PATH:-adaptive}"
+  out=$("$bin" empty toggle 2>/dev/null </dev/null)
+  zle -M "adaptive: ${out:-empty-prompt predictions unchanged}"
+  _adaptive_reset
+  (( ADAPTIVE_SUPPRESSED )) || _adaptive_schedule
+  zle -R
+}
+
 adaptive-up-line() { _adaptive_reset; zle .up-line-or-history }
 adaptive-down-line() { _adaptive_reset; zle .down-line-or-history }
 
 # Every fresh edit buffer starts predicting: on an empty prompt the engine
 # answers with the command this user most likely runs here, next, after the
 # previous line -- before a single key is pressed. The engine only ever
-# collapses to one candidate when its learned model is confident, so this
-# stays quiet rather than noisy.
+# collapses to one candidate when its learned model is confident, and the
+# whole feature is switchable (`adaptive empty off`), so this stays quiet
+# rather than noisy.
 adaptive-line-init() {
   _adaptive_reset
   if [[ -z "$BUFFER" && "$ADAPTIVE_GHOST_TEXT" == 1 ]] && (( CURSOR == 0 )); then
@@ -412,13 +761,42 @@ adaptive-line-init() {
 }
 adaptive-line-finish() { _adaptive_reset }
 
+# The shell's own forgetting rules, evaluated HERE -- not in the daemon --
+# because HISTORY_IGNORE belongs to this shell's environment, and a
+# long-lived server may have been spawned under a different one. Mirrors
+# src/history.rs::ignored_by_shell: space/tab prefix always forgotten,
+# then $HISTORY_IGNORE glob patterns against the whole line, including its
+# (pat1|pat2) multi-pattern form.
+_adaptive_locally_ignored() {
+  local line=$1 body alt
+  [[ "$line" == ' '* || "$line" == $'\t'* ]] && return 0
+  [[ -n "$HISTORY_IGNORE" ]] || return 1
+  body=${HISTORY_IGNORE#\(}
+  body=${body%\)}
+  if [[ "$body" == "$HISTORY_IGNORE" ]]; then
+    [[ "$line" == $~body ]] && return 0
+    return 1
+  fi
+  for alt in ${(s:|:)body}; do
+    [[ -n "$alt" ]] || continue
+    [[ "$line" == $~alt ]] && return 0
+  done
+  return 1
+}
+
 # Records executed lines into the usage profile (frequency, transitions,
 # directory affinity, command sequences) and remembers the line as context
-# for the next prediction. The engine sanitizes secrets before anything is
-# written to disk.
+# for the next prediction. Prefer the daemon (instant, in-memory); fall back
+# to the CLI only when the daemon is unreachable, in the background. The
+# engine sanitizes secrets before anything is written to disk.
 _adaptive_history_hook() {
-  local line="${1%$'\n'}"
-  adaptive history record --cwd "$PWD" --prev "${ADAPTIVE_PREV_CMD}" -- "$line" >/dev/null 2>&1 &!
+  local line="${1%$'\n'}" bin="${ADAPTIVE_BIN_PATH:-adaptive}"
+  if _adaptive_locally_ignored "$line"; then
+    _adaptive_log "history_hook ignored_by_shell"
+  else
+    _adaptive_sideband_op record 0 "$PWD" "$ADAPTIVE_PREV_CMD" "$line"
+    (( $? == 2 )) && "$bin" history record --cwd "$PWD" --prev "${ADAPTIVE_PREV_CMD}" -- "$line" >/dev/null 2>&1 &!
+  fi
   ADAPTIVE_PREV_CMD="$line"
   return 0
 }
@@ -428,9 +806,30 @@ _adaptive_history_hook() {
 # skips repeats via its own marker file.
 _adaptive_maybe_import() {
   [[ -n "$HISTFILE" && -r "$HISTFILE" ]] || return 0
-  adaptive history import >/dev/null 2>&1 &!
+  "${ADAPTIVE_BIN_PATH:-adaptive}" history import >/dev/null 2>&1 &!
 }
 _adaptive_maybe_import
+
+# ---- upgrade self-refresh ----------------------------------------------------
+# The stat identity of the installed binary is baked into this file at
+# generation time. After an upgrade, the first new shell notices here --
+# one builtin stat, no subprocess -- and regenerates the file in the
+# background; this session keeps running the copy it already loaded, and the
+# next shell sources the fresh one. An upgrade therefore costs neither a
+# slow shell startup nor a stale integration.
+_adaptive_self_refresh() {
+  [[ -n "$ADAPTIVE_BIN_PATH" && -x "$ADAPTIVE_BIN_PATH" ]] || return 0
+  zmodload -F zsh/stat b:zstat 2>/dev/null || return 0
+  local -A stat_info
+  zstat -H stat_info -- "$ADAPTIVE_BIN_PATH" 2>/dev/null || return 0
+  # Some filesystems report fractional mtimes; the baked identity is whole
+  # seconds, so truncate before comparing.
+  local size=${stat_info[size]} mtime=${stat_info[mtime]%%.*}
+  [[ "$size" == "$ADAPTIVE_BIN_SIZE" && "$mtime" == "$ADAPTIVE_BIN_MTIME" ]] && return 0
+  _adaptive_log "self_refresh stale size=$size mtime=$mtime"
+  ("$ADAPTIVE_BIN_PATH" init zsh >/dev/null 2>&1 &!)
+}
+_adaptive_self_refresh
 
 # ---- widget registration -----------------------------------------------------
 
@@ -441,17 +840,26 @@ zle -N adaptive-browse
 zle -N adaptive-cycle-next
 zle -N adaptive-cycle-prev
 zle -N adaptive-dismiss
+zle -N adaptive-toggle-suppress
+zle -N adaptive-cycle-fuzzy
+zle -N adaptive-cycle-fuzzy-back
+zle -N adaptive-toggle-empty
 zle -N adaptive-up-line
 zle -N adaptive-down-line
 zle -N zle-line-init adaptive-line-init
 zle -N zle-line-finish adaptive-line-finish
-zle -N adaptive-ready _adaptive_ready
+zle -N adaptive-ready
+zle -N adaptive-daemon-ready
 
 bindkey "$ADAPTIVE_ACCEPT_KEY" adaptive-accept
 bindkey "$ADAPTIVE_BROWSE_KEY" adaptive-browse
 bindkey "$ADAPTIVE_MENU_NEXT_KEY" adaptive-cycle-next
 bindkey "$ADAPTIVE_MENU_PREV_KEY" adaptive-cycle-prev
 bindkey "$ADAPTIVE_DISMISS_KEY" adaptive-dismiss
+bindkey "$ADAPTIVE_SUPPRESS_KEY" adaptive-toggle-suppress
+bindkey "$ADAPTIVE_CYCLE_FUZZY_KEY" adaptive-cycle-fuzzy
+bindkey "$ADAPTIVE_CYCLE_FUZZY_BACK_KEY" adaptive-cycle-fuzzy-back
+bindkey "$ADAPTIVE_TOGGLE_EMPTY_KEY" adaptive-toggle-empty
 bindkey '^[[A' adaptive-up-line
 bindkey '^[[B' adaptive-down-line
 

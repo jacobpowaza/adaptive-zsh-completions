@@ -28,39 +28,40 @@ pub struct Engine {
     pub cache: Cache,
     pub config: Config,
 }
+
+/// Everything one completion request carries, bundled so the entry points
+/// stay readable as the model grows.
+pub struct QueryRequest<'a> {
+    pub buffer: &'a str,
+    /// Cursor offset in bytes (the CLI/frontends count characters and
+    /// translate before calling).
+    pub cursor: usize,
+    pub cwd: &'a Path,
+    pub offline: bool,
+    /// Previously executed line; feeds sequence prediction.
+    pub prev: Option<&'a str>,
+    pub profile: &'a HistoryDb,
+}
+
 impl Engine {
     pub fn new(cache: Cache, config: Config) -> Self {
         Self { cache, config }
     }
-    pub fn query(
-        &self,
-        buffer: &str,
-        cursor: usize,
-        cwd: &Path,
-        offline: bool,
-        prev: Option<&str>,
-    ) -> Result<QueryResponse> {
-        self.query_inner(buffer, cursor, cwd, offline, false, prev)
+    pub fn query(&self, req: QueryRequest) -> Result<QueryResponse> {
+        self.query_inner(req, false)
     }
-    pub fn list(
-        &self,
-        buffer: &str,
-        cursor: usize,
-        cwd: &Path,
-        offline: bool,
-        prev: Option<&str>,
-    ) -> Result<QueryResponse> {
-        self.query_inner(buffer, cursor, cwd, offline, true, prev)
+    pub fn list(&self, req: QueryRequest) -> Result<QueryResponse> {
+        self.query_inner(req, true)
     }
-    fn query_inner(
-        &self,
-        buffer: &str,
-        cursor: usize,
-        cwd: &Path,
-        offline: bool,
-        list: bool,
-        prev: Option<&str>,
-    ) -> Result<QueryResponse> {
+    fn query_inner(&self, req: QueryRequest, list: bool) -> Result<QueryResponse> {
+        let QueryRequest {
+            buffer,
+            cursor,
+            cwd,
+            offline,
+            prev,
+            profile,
+        } = req;
         let context = parse_context(buffer, cursor);
         // What the world in general expects at this exact position, adjusted
         // for the directory we are standing in (`git ` means something else
@@ -72,14 +73,67 @@ impl Engine {
         let prior_key_str = prior_key(&context);
         let prior_tokens = priors::priors().next_tokens(&prior_key_str, scope);
 
-        let provider_candidates = providers::candidates(&ProviderContext {
+        // Providers answer "what is valid *here*" (branches, scripts, hosts);
+        // the optional carapace layer adds exact command knowledge (flags,
+        // subcommands, enums) for tools it has a completer for. Both spend
+        // their budget in subprocesses, so when both will actually run they
+        // share the wait on two threads and merge in stable order (providers
+        // first). Where carapace spoke, the documented-options decision
+        // below skips `--help` parsing -- the kubectl case -- while an
+        // explicit TAB listing still merges both. When no provider owns the
+        // position, threading would only add overhead: everything runs
+        // inline.
+        let carapace_wanted = self.config.carapace.enabled
+            && !bare_command
+            && context
+                .command
+                .as_deref()
+                .is_some_and(crate::carapace::valid_completer_name);
+        let provider_context = ProviderContext {
             query: &context,
             cwd,
             cache: &self.cache,
             forge_enabled: self.config.providers.forge.enabled,
             docker_enabled: self.config.providers.docker.enabled,
             offline,
-        });
+        };
+        let provider_candidates = if carapace_wanted && providers::any_match(&provider_context) {
+            let command = context.command.clone().unwrap_or_default();
+            std::thread::scope(|scope| {
+                let providers = scope.spawn(|| providers::candidates(&provider_context));
+                let carapace = scope.spawn(|| {
+                    crate::carapace::Carapace::detect().map(|carapace| {
+                        carapace.complete(
+                            &self.cache,
+                            &command,
+                            &context.args,
+                            &context.current,
+                            cwd,
+                        )
+                    })
+                });
+                let mut candidates = providers.join().unwrap_or_default();
+                if let Ok(Some(mut answers)) = carapace.join() {
+                    candidates.append(&mut answers);
+                }
+                candidates
+            })
+        } else {
+            let mut candidates = providers::candidates(&provider_context);
+            if carapace_wanted
+                && let Some(carapace) = crate::carapace::Carapace::detect()
+                && let Some(command) = context.command.as_deref()
+            {
+                candidates.extend(carapace.complete(
+                    &self.cache,
+                    command,
+                    &context.args,
+                    &context.current,
+                    cwd,
+                ));
+            }
+            candidates
+        };
         // Providers answer "what is valid *here*" (branches, scripts, hosts).
         // When one spoke, generic help text must not bury its answers -- but
         // a leading "-" is the user explicitly asking for this command's
@@ -93,8 +147,10 @@ impl Engine {
         let mut candidates = provider_candidates;
 
         // ---- persistent usage memory -------------------------------------
+        // The profile arrives pre-loaded (freshly parsed per process in CLI
+        // mode; shared in-memory state in daemon mode) so the hot path pays
+        // for it only when history can actually contribute.
         let half_life = self.config.completion.half_life_days;
-        let profile = HistoryDb::load().unwrap_or_default();
         let mut usage: HashMap<String, Usage> = HashMap::new();
         let mut rejected_usage: HashMap<String, Usage> = HashMap::new();
         // Decayed weights straight from the learned model for this position,
@@ -109,7 +165,10 @@ impl Engine {
         if self.config.completion.history && profile.enabled {
             if bare_command {
                 // Nothing (or a first letter) typed: predict whole commands.
-                if context.current.is_empty() && self.config.completion.predictive {
+                if context.current.is_empty()
+                    && self.config.completion.predictive
+                    && self.config.ui.empty_prompt_predictions
+                {
                     let dir_keys = history::dir_lookup_keys(cwd);
                     let prev_head = prev.and_then(history::command_head);
                     for (name, weight, last) in
@@ -335,12 +394,14 @@ impl Engine {
                 candidate.prior += 0.25;
             }
         }
+        let fuzzy_preset = self.config.fuzzy_preset();
         let mut candidates = if list {
             rank_for_list(
                 candidates,
                 &context.current,
                 &usage,
                 self.config.completion.fuzzy,
+                fuzzy_preset,
                 &rejected_usage,
             )
         } else {
@@ -349,6 +410,7 @@ impl Engine {
                 &context.current,
                 &usage,
                 self.config.completion.fuzzy,
+                fuzzy_preset,
                 &rejected_usage,
             )
         };

@@ -7,6 +7,12 @@ Adaptive uses `$XDG_CONFIG_HOME/adaptive/config.toml` (normally `~/.config/adapt
 history = true
 online_docs = false
 fuzzy = true
+# How far fuzzy matches may sprawl: the largest gap of unmatched characters
+# allowed between two consecutive typed characters when the prefix matches
+# as an in-order subsequence. One of "tight" (1), "smart" (4), "loose" (8).
+# Cycle at runtime with `adaptive fuzzy cycle` or the Shift-Right / Shift-Left
+# keys; `ADAPTIVE_FUZZY=tight|smart|loose` overrides per shell.
+fuzzy_preset = "smart"
 # Predict the next token proactively at untyped positions (after a trailing
 # space, and on an empty prompt) instead of waiting for a typed prefix.
 predictive = true
@@ -20,6 +26,10 @@ half_life_days = 21.0
 [ui]
 ghost_text = true
 max_candidates = 8
+# Predict a whole command on an untouched prompt. Toggled globally with
+# `adaptive empty on|off|toggle` (or Shift-Up); `ADAPTIVE_EMPTY=on|off`
+# overrides per shell.
+empty_prompt_predictions = true
 
 [providers.forge]
 enabled = true
@@ -27,11 +37,38 @@ enabled = true
 [providers.docker]
 enabled = true
 
+# Optional external completion engine (carapace-bin). Detected on PATH at
+# query time; Adaptive works identically without it.
+[carapace]
+enabled = true
+
 [privacy]
 telemetry = false
 ```
 
+## The daemon
+
+`adaptive serve` runs a long-lived server that keeps the usage profile in memory and answers queries over `<data dir>/adaptive.sock` for every terminal at once. `adaptive daemon start | stop | status` manage it, the Zsh integration starts it automatically on first use (`ADAPTIVE_AUTO_DAEMON=1`) unless `ADAPTIVE_NO_DAEMON=1`, and it exits after 15 idle minutes (`serve --idle-exit-secs N` to tune). Every mutation is persisted immediately, so killing the daemon never loses learned habits.
+
 Online docs are opt-in because local help/cache should cover the hot path. The resolver only knows explicit official mappings and never evaluates retrieved code. Setting telemetry to true is rejected because v0.1 contains no telemetry implementation.
+
+## Carapace integration (optional)
+
+When [carapace-bin](https://carapace-sh.github.io/carapace-bin/) is installed, Adaptive consults it as an additional completion source: exact subcommands, flags, enum values, positional arguments, and command-specific completions for the hundreds of CLIs it ships completers for — without Adaptive maintaining any per-command list.
+
+- **Detection is automatic.** If `carapace` is on `PATH`, its answers are merged into queries; if not, nothing changes. It is never a hard dependency.
+- **Personalization wins.** Carapace provides correctness and context; your learned habits (frequency + recency + accept feedback) deliberately outweigh it in ranking. A branch you always check out ranks above Carapace's generic suggestions, while Carapace's answers suppress redundant `--help` parsing (`kubectl get <TAB>` comes straight from its schema).
+- **Caching keeps it instant.** A warm query touches exactly two filesystem entries: one stat for the carapace binary fingerprint and one cached-answer read (about 60 µs of engine work end to end). Answers are cached per position and working directory with a ten-minute TTL inside a key derived from the fingerprint, so upgrading carapace invalidates everything it ever answered; unknown completers are negative-cached like any other answer. The completer listing is cached for 24 hours and consulted only on misses. Where provider subprocesses (git branches, npm scripts) and carapace both apply they run concurrently, so their waits overlap rather than add; each carapace call has a hard 400 ms timeout, and the Zsh frontend already runs every query off the ZLE thread — a hung or broken carapace can only ever cost one missed answer, never a stalled shell.
+
+Manage it without reinstalling:
+
+```sh
+adaptive carapace status    # detected path/version + enabled state
+adaptive carapace disable   # stop consulting carapace
+adaptive carapace enable    # use it again when present
+```
+
+The installer detects carapace too: found → it says so; missing → it prints optional install instructions (`ADAPTIVE_INSTALL_CARAPACE=yes` attempts the install automatically via Homebrew/apt/dnf/pacman/apk; `ask` prompts on interactive terminals). Adaptive installs and works fine either way.
 
 Zsh-specific environment settings must be assigned before the managed initialization block:
 

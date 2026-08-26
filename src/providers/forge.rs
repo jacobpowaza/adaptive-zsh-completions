@@ -219,10 +219,10 @@ struct BitbucketRepository {
 }
 
 fn fetch(input: &ForgeInput) -> Result<Vec<Repository>> {
-    let client = reqwest::blocking::Client::builder()
+    let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(3))
-        .user_agent(format!("adaptive/{}", crate::VERSION))
-        .build()?;
+        .user_agent(&format!("adaptive/{}", crate::VERSION))
+        .build();
     let kind = forge_kind(&input.host).ok_or_else(|| anyhow::anyhow!("unsupported forge host"))?;
     match kind {
         ForgeKind::Github => {
@@ -234,7 +234,7 @@ fn fetch(input: &ForgeInput) -> Result<Vec<Repository>> {
                 input.owner
             );
             let repositories: Vec<GithubRepository> =
-                get_json(&client, &url, github_token().as_deref())?;
+                get_json(&agent, &url, github_token().as_deref())?;
             Ok(repositories
                 .into_iter()
                 .map(|repo| Repository {
@@ -251,7 +251,7 @@ fn fetch(input: &ForgeInput) -> Result<Vec<Repository>> {
                 base.trim_end_matches('/'),
                 input.owner
             );
-            let repositories: Vec<GitlabRepository> = get_json(&client, &url, None)?;
+            let repositories: Vec<GitlabRepository> = get_json(&agent, &url, None)?;
             Ok(repositories
                 .into_iter()
                 .map(|repo| Repository {
@@ -268,7 +268,7 @@ fn fetch(input: &ForgeInput) -> Result<Vec<Repository>> {
                 base.trim_end_matches('/'),
                 input.owner
             );
-            let repositories: Vec<GiteaRepository> = get_json(&client, &url, None)?;
+            let repositories: Vec<GiteaRepository> = get_json(&agent, &url, None)?;
             Ok(repositories
                 .into_iter()
                 .map(|repo| Repository {
@@ -285,7 +285,7 @@ fn fetch(input: &ForgeInput) -> Result<Vec<Repository>> {
                 base.trim_end_matches('/'),
                 input.owner
             );
-            let repositories: BitbucketRepositories = get_json(&client, &url, None)?;
+            let repositories: BitbucketRepositories = get_json(&agent, &url, None)?;
             Ok(repositories
                 .values
                 .into_iter()
@@ -299,26 +299,29 @@ fn fetch(input: &ForgeInput) -> Result<Vec<Repository>> {
 }
 
 fn get_json<T: DeserializeOwned>(
-    client: &reqwest::blocking::Client,
+    agent: &ureq::Agent,
     url: &str,
     bearer_token: Option<&str>,
 ) -> Result<T> {
-    let mut request = client.get(url).header("Accept", "application/json");
+    let mut request = agent.get(url).set("Accept", "application/json");
     if let Some(token) = bearer_token {
-        request = request.bearer_auth(token);
+        request = request.set("Authorization", &format!("Bearer {token}"));
     }
-    let response = request.send().context("forge provider request failed")?;
-    if !response.status().is_success() {
-        bail!("forge provider returned {}", response.status())
-    }
+    let response = match request.call() {
+        Ok(response) => response,
+        Err(ureq::Error::Status(code, _)) => bail!("forge provider returned {code}"),
+        Err(e) => return Err(e).context("forge provider request failed"),
+    };
     if response
-        .content_length()
-        .is_some_and(|length| length > RESPONSE_LIMIT as u64)
+        .header("Content-Length")
+        .and_then(|length| length.parse::<usize>().ok())
+        .is_some_and(|length| length > RESPONSE_LIMIT)
     {
         bail!("forge response too large")
     }
     let mut bytes = Vec::new();
     response
+        .into_reader()
         .take(RESPONSE_LIMIT as u64 + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() > RESPONSE_LIMIT {

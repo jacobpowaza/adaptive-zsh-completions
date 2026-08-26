@@ -2,7 +2,43 @@
 
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and semantic versioning.
 
-## [Unreleased]
+## [0.4.0] - 2026-08-26
+
+### Added
+
+- Optional [carapace-bin](https://carapace-sh.github.io/carapace-bin/) integration: when carapace is on `PATH`, its exact command knowledge (subcommands, flags, enum values, positional and command-specific completions) is queried for any tool it has a completer for and merged with Adaptive's providers, learned history, priors, and help parsing. Answers are cached per position and working directory under a fingerprint of the carapace binary (path/size/mtime), the completer listing for 24 hours; a 400 ms hard timeout plus the frontend's existing off-thread queries keep completion instant, and missing, disabled, slow, or crashing carapace degrades to silence. `carapace.enabled = true` (default) in the config controls it, with `adaptive carapace status | enable | disable` toggles and a doctor line.
+- Git workflows gain repo-aware slots alongside Carapace: `git worktree add <TAB>` suggests sibling directories, branches, and existing worktrees; `git branch -d <TAB>` offers only deletable local heads (the checked-out branch excluded); `git cherry-pick <TAB>` offers recent commits by hash with subjects in the display; plain `git branch <TAB>` completes local heads.
+- The installer detects carapace and reports it; when absent it explains the optional install (`ADAPTIVE_INSTALL_CARAPACE=yes` tries Homebrew/apt/dnf/pacman/apk automatically, `ask` prompts only on interactive terminals) and always finishes successfully without it.
+- A long-lived completion server (`adaptive serve`, managed via `adaptive daemon start | stop | status`): one process holds the usage profile in memory and answers every terminal's queries over a per-user Unix socket, so a keystroke costs a sub-millisecond round trip instead of a process launch plus a profile parse. The Zsh integration prefers the socket automatically, falls back to one-shot processes whenever the server is missing or dies mid-session (auto-spawning it on first use), routes record/feedback through it so learning is instant, clamps the data dir and socket to owner-only access, and exits by itself after 15 idle minutes. `adaptive doctor` reports whether the running server matches your installed version.
+- Fuzzy sprawl presets (`tight` / `smart` / `loose`, default smart): how many unmatched characters may sit between typed letters when matching as an in-order subsequence — `gco` reaches `git checkout` under smart but can no longer wander into distant matches. Cycle live with Shift-Right / Shift-Left (`ADAPTIVE_CYCLE_FUZZY_KEY` / `ADAPTIVE_CYCLE_FUZZY_BACK_KEY`) or persist via `adaptive fuzzy <preset|cycle|back>`; the ladder with your active rung prints after every change.
+- Whole-command prediction on an untouched prompt is now a persisted global toggle: `adaptive empty on|off|toggle` or Shift-Up (`ADAPTIVE_TOGGLE_EMPTY_KEY`), with `ADAPTIVE_EMPTY=on|off` overriding per shell.
+- Session-wide suppression on Ctrl-X (`ADAPTIVE_SUPPRESS_KEY`): pauses all suggestions for this shell only, distinct from ESC dismiss which clears just the current line and records a rejection.
+- The shell's own forgetting rules now gate learning: space-prefixed lines are never recorded (the universal HIST_IGNORE_SPACE gesture; Adaptive applies it unconditionally since it cannot see your setopt state) and `HISTORY_IGNORE` glob patterns — including the `(pat1|pat2)` multi-pattern form — drop whole lines at record and import time.
+- Keystroke coalescing in the Zsh frontend: while a query is in flight, additional keystrokes mark a pending re-query instead of piling up work, and exactly one follow-up runs for the newest buffer when the result lands.
+- An interactive ZLE test harness (`tests/zle_pty.zsh`, wired into `cargo test` as two cases): a real interactive zsh is spawned under a pseudo-terminal via zsh/zpty and driven with actual keystrokes — ghost accept, arrow cycling, Shift-TAB browsing with row selection, shell-escaped directory insertion, Ctrl-X suppression, ESC dismiss — while an in-shell dump widget reports genuine editor state back to the assertions. Both transports run the gauntlet: one-shot fork processes and the live daemon socket.
+
+### Fixed
+
+- The Zsh socket encoder escaped fields through command substitution — three forks per keystroke that silently erased most of the daemon's latency win. Escaping is now pure parameter expansion (measured 0.19 ms per send, fork-free), with a regression test driving hostile tab/backslash buffers through a real server round trip.
+- A slow acknowledgement from the daemon (over one second) made the frontend re-send records and feedback through the CLI fallback, double-counting habits. The fallback now fires only when the daemon is genuinely unreachable; a timed-out ack is treated as delivered.
+- Concurrent record/feedback requests in the daemon could race their load-modify-save cycle against each other (a lost update) — the whole cycle now runs under the write lock.
+- Queries no longer hold the profile lock while discovery runs its subprocesses, so a slow `--help` probe can never delay a concurrent record or feedback write.
+- Resetting UI state mid-query (Ctrl-X, ESC, history navigation) left the coalescing counters set, so the next keystroke inside the 50 ms window could mark a pending re-query that nothing would ever consume; resets now retire the in-flight request id as well.
+- Truncated or failed result payloads clear both candidate views instead of leaving the previous query's suggestions on screen under the new buffer.
+- The generated init script falls back to default ghost settings when the saved config is broken, instead of failing shell startup; `adaptive daemon stop` says "no daemon is running" instead of leaking a connect error; fractional-mtime filesystems no longer trip the init-cache staleness check.
+- Daemon-served candidate rows stripped backslashes from shell-escaped values (`cd adaptive\ test` arrived as `cd adaptive test`, splitting into two words on accept); both transports now emit byte-identical payloads, covered by a live parity check.
+- The daemon's wire escaping leaked through to the frontend after that parity fix: socket rows arrive frame-escaped (`spaced\\ dir`), but the frontend never unescaped them, so an accepted completion inserted doubled backslashes and split the path into two words — the fork path inserts one backslash. The frontend now decodes wire-escaped socket payloads (pure parameter expansion, no forks), making the two transports identical after framing; caught by the new interactive ZLE harness on its first daemon-socket run.
+- A ghost answer crossing the wire after Shift-TAB could repaint over the open candidate list; browsing retires the in-flight request and ghost rendering refuses while a selector is up, and every counted socket read carries a two-second deadline so a daemon dying mid-payload can never freeze the prompt.
+- A corrupt `history.json` silently disabled learning everywhere and wedged `history` commands behind a manual file deletion; all paths now degrade to a fresh enabled profile and the next save rewrites the file.
+- `HISTORY_IGNORE` was evaluated against the daemon's environment rather than the recording shell's; the frontend now applies the shell's own forgetting rules locally before reporting a line.
+- The Zsh structural test's assertions were vacuous (a failed `[[ ]]` did not fail the run, and editor state was never initialized), so it protected nothing despite passing; the harness now aborts on any failed assertion and drives real buffer/cursor state.
+
+
+### Changed
+
+- Performance pass on the query pipeline: the warm carapace path touches exactly two filesystem entries (one binary-fingerprint stat, one cached-answer read); the completer listing and negative answers are consulted only on cache misses; provider subprocesses (git branches, npm scripts, ...) and carapace now run concurrently where both apply instead of sequentially; the usage profile is no longer parsed at all when history is disabled; and the HTTP client shrank from reqwest/tokio to `ureq` (binary 5.3 MB → 4.6 MB, same rustls TLS, identical forge/docs behavior). In-process, a fully warm query — carapace included — completes in about 60 µs; remaining end-to-end latency is process startup.
+- Shell startup no longer launches the binary: `adaptive init zsh` writes the integration to `<data dir>/init.zsh` once and prints a `source` line for it; the installer appends a direct-source block with an eval fallback. The generated script compares the installed binary's stat identity against its own baked copy (one builtin stat, no subprocess) and regenerates itself in the background after an upgrade — the current session keeps running what it loaded, the next shell picks up the fresh file.
+- Engine queries take an explicit profile reference, letting the daemon share one parsed copy across every connection while CLI invocations keep loading their own.
 
 ## [0.3.0] - 2026-08-23
 
@@ -96,3 +132,5 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 [0.1.2]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.1.2
 [0.2.0]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.2.0
 [0.2.1]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.2.1
+[0.3.0]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.3.0
+[0.4.0]: https://github.com/jacobpowaza/adaptive-zsh-completions/releases/tag/v0.4.0
