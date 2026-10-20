@@ -1,0 +1,15 @@
+title = "Adaptive: gitleaks configuration"
+
+# Adaptive ships no credentials, and the installer, the frontends and the
+# release artifacts are all public. Two findings are false positives and are
+# allowlisted below; anything else must be fixed rather than allowlisted.
+
+[[allowlists]]
+description = "Empty shell variable assignments are not credentials"
+paths = ['''shell/adaptive\.(zsh|bash|blesh)''']
+regexes = ['''ADAPTIVE_CONTEXT_KEY=""''']
+
+[[allowlists]]
+description = "Unit-test fixture: the fake bearer token the sanitizer must reject"
+paths = ['''src/history\.rs''']
+regexes = ['''Authorization: Bearer secretvalue''']

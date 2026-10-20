@@ -83,6 +83,17 @@ Adaptive renders the highest-ranked recommendation inline. Tab accepts that sugg
 
 The installer also accepts `ADAPTIVE_ACCEPT_KEY`, `ADAPTIVE_MENU_NEXT_KEY`, `ADAPTIVE_BROWSE_KEY`, and `ADAPTIVE_GHOST_STYLE` and writes their quoted values into its managed block.
 
+Bash-specific environment settings must be assigned before the managed initialization block:
+
+```bash
+# The key that accepts the inline suggestion (default: Right).
+export ADAPTIVE_GHOST_ACCEPT_KEY=$'\e[C'
+# The key that lists every candidate (default: Shift-Tab).
+export ADAPTIVE_BROWSE_KEY=$'\e[Z'
+```
+
+The installer writes these from `ADAPTIVE_BASH_ACCEPT_KEY` and `ADAPTIVE_BASH_BROWSE_KEY`, which use the same caret notation as the Zsh settings (`^[[C`, `^[Z`, `^I`); the installer converts them to the literal escape sequences Bash needs. The Readline frontend also honours `ADAPTIVE_GHOST_TEXT=0` (no inline suggestion) and `ADAPTIVE_GHOST_REJECT_KEY` (the key that discards the suggestion and pauses suggestions for the session, default `Ctrl-X`).
+
 ## Usage priors
 
 Ranking blends what people generally run with what you run. The global half lives in a table shipped with the binary and can be extended or reordered in `~/.config/adaptive/priors.toml` (`ADAPTIVE_PRIORS` overrides the path):
