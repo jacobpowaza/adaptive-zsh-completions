@@ -14,7 +14,7 @@ $ git clone https://github.com/jacobpowaza/
 Adaptive discovers what a command accepts, resolves what the current argument means, and ranks useful values from local context and learned habits. Its best recommendation appears as inline ghost text; Tab accepts it and Shift-TAB lists every candidate.
 
 > [!NOTE]
-> Adaptive ships complete Zsh and Bash frontends over the same query protocol. The engine is shell-independent; a Fish frontend is planned.
+> Adaptive ships complete Zsh and Bash frontends over the same query protocol. On Bash it speaks both GNU Readline and ble.sh. The engine is shell-independent; a Fish frontend is planned.
 
 ## Install
 
@@ -22,9 +22,9 @@ Adaptive discovers what a command accepts, resolves what the current argument me
 curl -fsSL https://raw.githubusercontent.com/jacobpowaza/adaptive-zsh-completions/main/install.sh | sh
 ```
 
-The installer verifies release checksums, installs `adaptive` in `~/.local/bin`, backs up `.zshrc`, and adds one marked, idempotent block. If a binary is unavailable for the machine, it falls back to a local Cargo build.
+The installer verifies release checksums, installs `adaptive` in `~/.local/bin`, backs up your shell's rc file, and adds one marked, idempotent block. It wires up Zsh, Bash, or both, depending on the shell it detects (override with `ADAPTIVE_SHELL=bash|zsh|both`). If a binary is unavailable for the machine, it falls back to a local Cargo build.
 
-Restart Zsh, then check the installation:
+Restart your shell, then check the installation:
 
 ```sh
 adaptive doctor
@@ -34,6 +34,14 @@ To install with a different acceptance key, pass a Zsh `bindkey` sequence to the
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jacobpowaza/adaptive-zsh-completions/main/install.sh | ADAPTIVE_ACCEPT_KEY='^F' sh
+```
+
+The Bash frontends take their own keys: `ADAPTIVE_BASH_ACCEPT_KEY` (the key
+that accepts the inline suggestion) and `ADAPTIVE_BASH_BROWSE_KEY` (the key
+that lists candidates), both in the same caret notation.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jacobpowaza/adaptive-zsh-completions/main/install.sh | ADAPTIVE_SHELL=bash ADAPTIVE_BASH_ACCEPT_KEY='^[[C' sh
 ```
 
 For a source checkout:
@@ -48,7 +56,7 @@ To uninstall:
 curl -fsSL https://raw.githubusercontent.com/jacobpowaza/adaptive-zsh-completions/main/uninstall.sh | sh
 ```
 
-The uninstaller backs up `.zshrc`, removes only Adaptive's managed block and binary, and leaves local cache/history in place.
+The uninstaller backs up your rc file, removes only Adaptive's managed block and binary, and leaves local cache/history in place.
 
 ## What it completes
 
@@ -112,13 +120,41 @@ When a server is reachable (`adaptive daemon start`, or automatic on first use f
 
 ## Bash
 
-Bash has no inline ghost text, so Adaptive powers Tab itself: pressing Tab lists everything valid at this position — subcommands, flags, enum values, branches, scripts — and readline inserts the choice. Commands that ship their own completion functions keep them; when the engine has nothing, native filename completion takes over.
+Adaptive ships two Bash frontends. Both drive the same engine over the same
+protocol as the Zsh one, and the installer picks between them for you.
 
-Add one line to `~/.bashrc` (bash >= 4 required):
+**ble.sh** replaces Readline with a line editor written in pure Bash that
+renders styled regions, so the inline suggestion can be *dimmed* -- exactly
+what the Zsh frontend does. Right cycles to the next candidate, Left to the
+previous one, Tab accepts the suggestion, Shift-Tab lists every candidate.
+
+**GNU Readline** has no equivalent of ZLE's `POSTDISPLAY`: it renders exactly
+the line buffer, and anything painted from outside is erased by the next
+repaint. Adaptive therefore keeps the suggestion *inside* the buffer --
+`READLINE_LINE` holds `<what you typed><the suggestion>` with the cursor on
+the boundary -- so the suggestion stays visible and every Readline feature
+(wrapping, resize, history, cursor keys) keeps working. It is not dimmed,
+because Readline prints ANSI escapes literally. Right or End accepts the whole
+suggestion, Ctrl-Right accepts one word of it, Ctrl-X discards it, Tab
+completes normally, and Shift-Tab walks the candidate list backwards.
+
+The installer detects ble.sh and uses it when it is installed; otherwise the
+Readline frontend takes over. Both need bash >= 4.
+
+```sh
+# The installer does this for you:
+curl -fsSL https://raw.githubusercontent.com/jacobpowaza/adaptive-zsh-completions/main/install.sh | sh
+```
+
+To wire Bash up by hand, add one line to `~/.bashrc`:
 
 ```sh
 eval "$(adaptive init bash)"
 ```
+
+`adaptive init blesh` generates the ble.sh frontend instead. Both frontends
+share one runtime (`adaptive-core.bash`) that the generated script sources, so
+nothing is launched at shell startup.
 
 Bootstrap the usage profile from your existing history once:
 
@@ -130,6 +166,8 @@ adaptive history import ~/.bash_history
 
 ```text
 adaptive init zsh
+adaptive init bash
+adaptive init blesh
 adaptive doctor
 adaptive query --buffer 'git clone' --list
 adaptive query --buffer '' --prev 'make test'

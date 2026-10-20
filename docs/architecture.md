@@ -51,3 +51,7 @@ Schemas are stored in an engine-versioned namespace, keyed by command/path, and 
 ## Frontend boundary
 
 `adaptive query --buffer ... --cursor ... --cwd ...` is the portable boundary shared by the Zsh and Bash frontends. Frontends may add `--list` for an explicit alternatives listing; without it, the existing prefix-focused response is unchanged. Frontends own keybindings and rendering; they do not need to understand discovery, providers, cache, or ranking.
+
+The Bash side is split in two: `shell/adaptive-core.bash` holds everything that is not about a particular line editor (binary and directory lookup, the TSV query protocol, the per-word candidate cache, history capture, the shell's forgetting rules), and `shell/adaptive.bash` / `shell/adaptive.blesh` are the line-editor adapters. The generated `init.bash` and `init.blesh` files source the core and then the adapter, so the split is invisible to the user.
+
+The two Bash adapters differ only in how a suggestion is rendered. ble.sh paints styled regions, so the suggestion can be dimmed; GNU Readline paints exactly the line buffer, so the suggestion has to live *inside* `READLINE_LINE` (the cursor sits on the boundary between the typed text and the suggestion) and cannot be styled. Both adapters speak the same protocol and cache candidates per word, so typing a word never forks a process.

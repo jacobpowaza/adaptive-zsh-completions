@@ -4,11 +4,18 @@ set -eu
 REPO="jacobpowaza/adaptive-zsh-completions"
 INSTALL_DIR=${ADAPTIVE_INSTALL_DIR:-"$HOME/.local/bin"}
 ZSHRC=${ADAPTIVE_ZSHRC:-"$HOME/.zshrc"}
+BASHRC=${ADAPTIVE_BASHRC:-"$HOME/.bashrc"}
+# Which shell(s) to wire up: auto (detect), bash, zsh, or both.
+SHELL_TARGET=${ADAPTIVE_SHELL:-auto}
 VERSION=${ADAPTIVE_VERSION:-latest}
 ACCEPT_KEY=${ADAPTIVE_ACCEPT_KEY:-'^I'}
 MENU_NEXT_KEY=${ADAPTIVE_MENU_NEXT_KEY:-'^[[C'}
 BROWSE_KEY=${ADAPTIVE_BROWSE_KEY:-'^[[Z'}
 GHOST_STYLE=${ADAPTIVE_GHOST_STYLE:-'fg=245'}
+# Bash frontends use their own knobs: the Readline frontend accepts a
+# suggestion with Right (or End), the ble.sh frontend with Tab.
+BASH_ACCEPT_KEY=${ADAPTIVE_BASH_ACCEPT_KEY:-''}
+BASH_BROWSE_KEY=${ADAPTIVE_BASH_BROWSE_KEY:-'^[[Z'}
 
 say() { printf '%s\n' "$*"; }
 fail() { say "adaptive installer: $*" >&2; exit 1; }
@@ -25,10 +32,16 @@ command -v curl >/dev/null 2>&1 || fail "curl is required"
 [ "$(printf '%s' "$MENU_NEXT_KEY" | tr -d '\r\n')" = "$MENU_NEXT_KEY" ] || fail "ADAPTIVE_MENU_NEXT_KEY must be one line"
 [ "$(printf '%s' "$BROWSE_KEY" | tr -d '\r\n')" = "$BROWSE_KEY" ] || fail "ADAPTIVE_BROWSE_KEY must be one line"
 [ "$(printf '%s' "$GHOST_STYLE" | tr -d '\r\n')" = "$GHOST_STYLE" ] || fail "ADAPTIVE_GHOST_STYLE must be one line"
+[ "$(printf '%s' "$BASH_BROWSE_KEY" | tr -d '\r\n')" = "$BASH_BROWSE_KEY" ] || fail "ADAPTIVE_BASH_BROWSE_KEY must be one line"
+[ "${#BASH_BROWSE_KEY}" -le 32 ] || fail "ADAPTIVE_BASH_BROWSE_KEY is too long"
+[ "$(printf '%s' "$BASH_ACCEPT_KEY" | tr -d '\r\n')" = "$BASH_ACCEPT_KEY" ] || fail "ADAPTIVE_BASH_ACCEPT_KEY must be one line"
+[ "${#BASH_ACCEPT_KEY}" -le 32 ] || fail "ADAPTIVE_BASH_ACCEPT_KEY is too long"
 accept_key_escaped=$(printf '%s' "$ACCEPT_KEY" | sed "s/'/'\\\\''/g")
 menu_next_key_escaped=$(printf '%s' "$MENU_NEXT_KEY" | sed "s/'/'\\\\''/g")
 browse_key_escaped=$(printf '%s' "$BROWSE_KEY" | sed "s/'/'\\\\''/g")
 ghost_style_escaped=$(printf '%s' "$GHOST_STYLE" | sed "s/'/'\\\\''/g")
+bash_accept_key_escaped=$(printf '%s' "$BASH_ACCEPT_KEY" | sed "s/'/'\\\\''/g")
+bash_browse_key_escaped=$(printf '%s' "$BASH_BROWSE_KEY" | sed "s/'/'\\\\''/g")
 mkdir -p "$INSTALL_DIR"
 
 install_from_source() {
@@ -144,15 +157,81 @@ else
   esac
 fi
 
-touch "$ZSHRC"
-if ! grep -q '^# >>> adaptive initialize >>>$' "$ZSHRC"; then
+# ---------------------------------------------------------------------------
+# shell integration
+# ---------------------------------------------------------------------------
+
+# Which shells to wire up. `auto` follows $SHELL; when that is ambiguous the
+# integration is written for every shell that is actually installed, because
+# each block is independent and idempotent.
+target_shells() {
+  case "$SHELL_TARGET" in
+    bash|zsh|both)
+      printf '%s\n' "$SHELL_TARGET"
+      ;;
+    auto)
+      base=$(basename "${SHELL:-}")
+      case "$base" in
+        bash) printf 'bash\n' ;;
+        zsh) printf 'zsh\n' ;;
+        *)
+          found=''
+          command -v bash >/dev/null 2>&1 && found="$found bash"
+          command -v zsh >/dev/null 2>&1 && found="$found zsh"
+          [ -n "$found" ] || found=' zsh'
+          # shellcheck disable=SC2086  # deliberate word splitting
+          printf '%s\n' $found
+          ;;
+      esac
+      ;;
+    *) fail "ADAPTIVE_SHELL must be one of: auto, bash, zsh, both" ;;
+  esac
+}
+
+# Translate a caret-notation key (the Zsh bindkey form, e.g. '^[[Z') into the
+# literal bytes a Bash frontend expects.
+bash_key_bytes() {
+  printf '%s' "$1" | awk '
+    {
+      out = "";
+      n = length($0);
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1);
+        if (c == "^" && i < n) {
+          d = substr($0, ++i, 1);
+          if (d == "[") out = out "\033";
+          else if (d == "I") out = out "\t";
+          else out = out toupper(d);
+        } else out = out c;
+      }
+      printf "%s", out;
+    }'
+}
+
+# Render a value as a Bash $'...' literal, so escape sequences in it (the ESC
+# of a cursor key, for instance) survive the round trip through the rc file.
+bash_dollar_quote() {
+  printf "$'%s'" "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g" -e 's/\x1b/\\e/g')"
+}
+
+# The path of a generated integration file, as printed by `adaptive init`.
+init_path() {
+  printf '%s\n' "$("$INSTALL_DIR/adaptive" init "$1" || true)" |
+    sed -n "s/^source '\(.*\)'$/\1/p"
+}
+
+install_zsh_block() {
+  touch "$ZSHRC"
+  if grep -q '^# >>> adaptive initialize >>>$' "$ZSHRC"; then
+    say "Zsh integration already present in $ZSHRC"
+    return 0
+  fi
   backup="$ZSHRC.adaptive-backup.$(date +%Y%m%d%H%M%S).$$"
   cp "$ZSHRC" "$backup"
   # Pre-generate the cached integration so the very next shell sources a
   # file instead of launching the binary, and learn where the data dir
   # landed (platform-dependent) from the printed source line.
-  init_output=$("$INSTALL_DIR/adaptive" init zsh || true)
-  init_file=$(printf '%s\n' "$init_output" | sed -n "s/^source '\(.*\)'$/\1/p")
+  init_file=$(init_path zsh)
   {
     printf '\n# >>> adaptive initialize >>>\n'
     printf 'export PATH="%s:$PATH"\n' "$INSTALL_DIR"
@@ -173,8 +252,94 @@ if ! grep -q '^# >>> adaptive initialize >>>$' "$ZSHRC"; then
     printf '# <<< adaptive initialize <<<\n'
   } >> "$ZSHRC"
   say "Updated $ZSHRC (backup: $backup)"
-else
-  say "Zsh integration already present in $ZSHRC"
-fi
+}
+
+install_bash_block() {
+  touch "$BASHRC"
+  if grep -q '^# >>> adaptive initialize >>>$' "$BASHRC"; then
+    say "Bash integration already present in $BASHRC"
+    return 0
+  fi
+  backup="$BASHRC.adaptive-backup.$(date +%Y%m%d%H%M%S).$$"
+  cp "$BASHRC" "$backup"
+  # Pre-generate both Bash frontends so the very next shell sources a file
+  # instead of launching the binary.
+  bash_init_file=$(init_path bash)
+  blesh_init_file=$(init_path blesh)
+  browse_literal=$(bash_dollar_quote "$(bash_key_bytes "$BASH_BROWSE_KEY")")
+  bash_init_quoted=''
+  if [ -n "$bash_init_file" ]; then
+    bash_init_quoted=$(printf "'%s'" "$(printf '%s' "$bash_init_file" | sed "s/'/'\\\\''/g")")
+  fi
+  blesh_init_quoted=''
+  if [ -n "$blesh_init_file" ]; then
+    blesh_init_quoted=$(printf "'%s'" "$(printf '%s' "$blesh_init_file" | sed "s/'/'\\\\''/g")")
+  fi
+  {
+    printf '\n# >>> adaptive initialize >>>\n'
+    printf 'if [[ $- == *i* ]] && command -v adaptive >/dev/null 2>&1; then\n'
+    printf '  export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+    printf "  export ADAPTIVE_BROWSE_KEY=%s\n" "$browse_literal"
+    if [ -n "$BASH_ACCEPT_KEY" ]; then
+      printf "  export ADAPTIVE_GHOST_ACCEPT_KEY=%s\n" \
+        "$(bash_dollar_quote "$(bash_key_bytes "$BASH_ACCEPT_KEY")")"
+    fi
+    printf '  # ble.sh replaces Readline with a line editor that renders styled\n'
+    printf '  # regions, so the inline suggestion can be dimmed. Load it when it is\n'
+    printf '  # installed; otherwise the Readline frontend below takes over.\n'
+    printf '  if [[ -r ${XDG_DATA_HOME:-$HOME/.local/share}/blesh/ble.sh ]]; then\n'
+    printf '    [[ -n ${_ble_version:-} ]] || source ${XDG_DATA_HOME:-$HOME/.local/share}/blesh/ble.sh\n'
+    printf '  elif [[ -r $HOME/.blesh/ble.sh ]]; then\n'
+    printf '    [[ -n ${_ble_version:-} ]] || source $HOME/.blesh/ble.sh\n'
+    printf '  fi\n'
+    printf '  if declare -F ble/util/idle.push >/dev/null 2>&1 || [[ -n ${_ble_version:-} ]]; then\n'
+    if [ -n "$blesh_init_quoted" ]; then
+      printf '    if [[ -r %s ]]; then\n' "$blesh_init_quoted"
+      printf '      source %s\n' "$blesh_init_quoted"
+      printf '    else\n'
+      printf '      eval "$(adaptive init blesh)"\n'
+      printf '    fi\n'
+    else
+      printf '    eval "$(adaptive init blesh)"\n'
+    fi
+    printf '    # ble.sh wants an indexed array here; Adaptive declares it as a\n'
+    printf '    # dictionary when the file is re-sourced, so repair it on every load.\n'
+    printf '    _adaptive_completion_sources() {\n'
+    printf '      unset -v _ble_complete_auto_source\n'
+    printf '      declare -ga _ble_complete_auto_source=(adaptive history syntax)\n'
+    printf '    }\n'
+    printf '    _adaptive_completion_sources\n'
+    printf '    if declare -F ble/util/idle.push >/dev/null 2>&1; then\n'
+    printf '      ble/util/idle.push _adaptive_completion_sources\n'
+    printf '    fi\n'
+    printf '  elif [[ -r %s ]]; then\n' "${bash_init_quoted:-/dev/null}"
+    if [ -n "$bash_init_quoted" ]; then
+      printf '    source %s\n' "$bash_init_quoted"
+    fi
+    printf '  else\n'
+    printf '    eval "$(adaptive init bash)"\n'
+    printf '  fi\n'
+    printf 'fi\n'
+    printf '# <<< adaptive initialize <<<\n'
+  } >> "$BASHRC"
+  say "Updated $BASHRC (backup: $backup)"
+}
+
+for target in $(target_shells); do
+  case "$target" in
+    zsh) install_zsh_block ;;
+    bash) install_bash_block ;;
+    both)
+      install_zsh_block
+      install_bash_block
+      ;;
+  esac
+done
+
 say "Installed $INSTALL_DIR/adaptive"
-say "Restart Zsh or run: exec zsh"
+case "$SHELL_TARGET" in
+  bash) say "Restart Bash or run: exec bash" ;;
+  zsh) say "Restart Zsh or run: exec zsh" ;;
+  both) say "Restart your shell (exec bash / exec zsh)" ;;
+  *) say "Restart your shell (exec bash / exec zsh)" ;;
+esac

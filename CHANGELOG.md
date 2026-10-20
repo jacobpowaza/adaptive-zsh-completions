@@ -2,6 +2,21 @@
 
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and semantic versioning.
 
+## [0.5.0] - 2026-10-20
+
+### Added
+
+- A real Bash frontend, rebuilt around Readline instead of Tab-only completion. Adaptive now keeps the suggestion *inside* the line buffer (`READLINE_LINE` holds what you typed plus the suggestion, with the cursor on the boundary), because Readline erases anything painted from outside the buffer. The suggestion is visible, every Readline feature keeps working, Right/End accept it, Ctrl-Right accepts one word of it, Ctrl-X discards it, and Shift-Tab walks the candidate list backwards. Tab still completes normally and falls back to Bash's own rules (and to `bash-completion`) whenever the engine has nothing.
+- A ble.sh frontend (`adaptive init blesh`): ble.sh replaces Readline with a line editor written in pure Bash that renders styled regions, so the inline suggestion can be *dimmed* — what the Zsh frontend does and what Readline cannot. It plugs into ble.sh's documented extension points (the auto-complete source list and its ordinary completion), and the key map matches the Zsh frontend: arrows cycle candidates, Tab accepts, Shift-Tab lists.
+- A shared Bash runtime (`shell/adaptive-core.bash`): locating the binary and the data directories, the TSV query protocol, the per-word candidate cache that keeps typing at Readline's own speed, history capture, and the shell's own forgetting rules (`HISTCONTROL`, `HISTIGNORE`) — evaluated in the recording shell, not in the long-lived daemon.
+- `adaptive init bash` and `adaptive init blesh` now write their integration to the data directory and print a `source` line for it, exactly like `adaptive init zsh`, so a Bash shell starts without launching the binary. The generated file also carries the binary's stat identity and regenerates itself after an upgrade.
+- The installer detects the shell and wires up Zsh, Bash, or both (`ADAPTIVE_SHELL=auto|bash|zsh|both`, auto by default). The Bash block loads ble.sh when it is installed and falls back to the Readline frontend otherwise, and it is the same marked, idempotent, backed-up block the Zsh path has always used. `ADAPTIVE_BASH_ACCEPT_KEY` and `ADAPTIVE_BASH_BROWSE_KEY` configure the Bash keys in the same caret notation the Zsh settings use.
+- `adaptive doctor` reports the Bash line editor in use (ble.sh or GNU Readline) next to the Bash integration status.
+
+### Changed
+
+- The uninstaller removes Adaptive's managed block from `.bashrc` as well as `.zshrc`, backing both up first.
+
 ## [0.4.0] - 2026-08-26
 
 ### Added
