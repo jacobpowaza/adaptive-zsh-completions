@@ -2,6 +2,12 @@
 
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and semantic versioning.
 
+## [0.5.2] - 2026-10-20
+
+### Fixed
+
+- The installer no longer risks truncating an rc file whose Adaptive block has a start marker but no end marker -- a state a hand-edited rc file can end up in. v0.5.1 replaced the managed block in place, and without an end marker there is no way to tell where Adaptive's block stops and the user's own configuration begins, so everything after the start marker was treated as the block and removed. The installer and the uninstaller now leave such a file completely untouched and report the line range to repair instead. A regression test covers the case.
+
 ## [0.5.1] - 2026-10-20
 
 ### Fixed
