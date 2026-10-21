@@ -11,16 +11,15 @@
 # Readline cannot do, because it renders ANSI escapes literally and repaints
 # with erase-to-EOL.
 #
-# Adaptive plugs in at two documented extension points:
+# Adaptive plugs in at ble.sh's documented extension point:
 #
 #   * `ble/complete/auto-complete/source:<name>` -- ble.sh asks each registered
 #     source for an inline suggestion once the user pauses. Adaptive answers
 #     here, so suggestions come from the learned engine rather than raw history
 #     matching, and ble.sh paints the answer in a dim face.
 #
-#   * ble.sh's ordinary `complete -D` completion, fed by the same handler the
-#     Readline frontend uses, so Tab and Shift-Tab list engine candidates and
-#     everything else still falls through to bash-completion and filenames.
+# The ordinary `complete -D` completion is registered too, so the engine also
+# answers Tab in the (rare) case where the shell falls back to Readline.
 #
 # ---------------------------------------------------------------------------
 # KEY MAP -- deliberately the same as the Zsh frontend
@@ -60,18 +59,11 @@ _adaptive_init_paths
 (( BASH_VERSINFO[0] >= 4 )) || return 0
 
 # ---------------------------------------------------------------------------
-# ble.sh configuration
+# ble.sh style
 # ---------------------------------------------------------------------------
-# All of this has to happen *after* ble.sh has finished loading.
-#
-# The adapter is sourced immediately after ble.sh, while ble.sh is still
-# bringing itself up: it has not yet imported the files that define its
-# keymaps and faces, and it re-applies its own defaults afterwards. A bleopt
-# set at that moment is silently discarded (measured: highlight_syntax came
-# back as 1), and a binding made then is overwritten when the auto-complete
-# keymap is finally defined. Both failures are silent, so everything is pushed
-# onto ble.sh's idle queue, which runs once initialisation is complete.
-_adaptive_blesh_configure() {
+# The style can be applied right away: ble.sh reads the face and the bleopt
+# settings when it renders, and the values survive its own start-up.
+_adaptive_blesh_style() {
   # Plain grey on the terminal's own background, matching the Zsh frontend's
   # `fg=245`. No background colour: the suggestion should read as dimmed text,
   # not as a highlighted block.
@@ -97,27 +89,8 @@ _adaptive_blesh_configure() {
   # Completion menus are coloured to match/prefix-highlight by default.
   bleopt complete_menu_color=''
   bleopt complete_menu_color_match=''
-
-  # The arrows are rebound inside the auto-complete keymap -- the keymap in
-  # force exactly while a suggestion is on screen -- so with no suggestion
-  # showing, Right and Left keep their normal meaning of cursor movement.
-  ble-decode-key/bind auto_complete right ble/widget/adaptive-cycle-next 2>/dev/null || true
-  ble-decode-key/bind auto_complete C-f   ble/widget/adaptive-cycle-next 2>/dev/null || true
-  ble-decode-key/bind auto_complete left  ble/widget/adaptive-cycle-prev 2>/dev/null || true
-  ble-decode-key/bind auto_complete C-b   ble/widget/adaptive-cycle-prev 2>/dev/null || true
-  # Shift-Tab walks the candidate list backwards. ble.sh reaches this gesture
-  # through `ble/widget/menu-complete backward`, but a key binding can only
-  # name a function, not pass it an argument, hence the wrapper above.
-  ble-decode-key/bind auto_complete "$ADAPTIVE_BROWSE_KEY" ble/widget/adaptive-menu-complete-backward 2>/dev/null || true
-  ble-decode-key/bind emacs "$ADAPTIVE_BROWSE_KEY" ble/widget/adaptive-menu-complete-backward 2>/dev/null || true
 }
-
-if ble/is-function ble/util/idle.push 2>/dev/null; then
-  ble/util/idle.push _adaptive_blesh_configure
-else
-  # No idle queue (very old ble.sh): apply directly and hope for the best.
-  _adaptive_blesh_configure
-fi
+_adaptive_blesh_style
 
 # ---------------------------------------------------------------------------
 # inline suggestion
@@ -239,14 +212,6 @@ function ble/widget/adaptive-cycle-prev {
   fi
 }
 
-# Register Adaptive ahead of ble.sh's own history matcher: the engine knows
-# about command structure and learned habits, and the raw-history fallback is
-# still there as a second opinion.
-if declare -p _ble_complete_auto_source >/dev/null 2>&1; then
-  builtin eval -- "${_ble_util_gdict_declare//NAME/_ble_complete_auto_source}"
-  _ble_complete_auto_source=(adaptive history syntax)
-fi
-
 # Shift-Tab, as a named widget.
 #
 # ble.sh's own Shift-Tab is `menu-complete backward`: the direction is an
@@ -256,6 +221,118 @@ fi
 function ble/widget/adaptive-menu-complete-backward {
   ble/widget/menu-complete backward
 }
+
+# ---------------------------------------------------------------------------
+# key bindings
+# ---------------------------------------------------------------------------
+# The bindings go through `ble-bind`, ble.sh's user-facing binding command: it
+# turns a key *name* into the key *code* the decoder matches on.
+#
+# The low-level `ble-decode-key/bind` must not be used for this. It expects
+# key codes, not key names, and it builds the keymap array subscript with
+# `builtin eval`, so a name such as "right" or "\e[Z" ends up being evaluated
+# as an arithmetic expression. When that expression is not a number, bash
+# raises a syntax error inside the eval -- and in an interactive shell a
+# syntax error aborts the whole enclosing command. The enclosing command here
+# is ble.sh's own prompt-rendering chain, so the prompt is never restored,
+# PS1 keeps ble.sh's internal placeholder, and every new terminal greets the
+# user with "[ble: press RET to continue]".
+#
+# The bindings are made from ble.sh's idle queue, because the keymap they
+# belong to (`auto_complete`, the one in force while a suggestion is on
+# screen) is defined in ble.sh's completion core, which ble.sh imports only
+# when it is first needed. Until that import has happened ble.sh does not
+# know the keymap at all.
+
+# The browse key, as a ble.sh key specification.
+#
+# ble.sh's own keymaps call Shift-Tab "S-TAB", and that is what the emacs
+# keymap already binds to `menu-complete backward`, so the default raw key
+# (ESC [ Z) is expressed with that name. Any other key is passed on as the
+# exact character sequence the terminal sends.
+: "${ADAPTIVE_BLE_BROWSE_KEY:=}"
+_adaptive_blesh_keyspec() {
+  if [[ -n $ADAPTIVE_BLE_BROWSE_KEY ]]; then
+    printf '%s' "$ADAPTIVE_BLE_BROWSE_KEY"
+    return 0
+  fi
+  local raw=${ADAPTIVE_BROWSE_KEY:-}
+  if [[ $raw == $'\e[Z' || $raw == '\e[Z' ]]; then
+    printf 'S-TAB'
+    return 0
+  fi
+  # Anything else: the Readline-style text form of the raw bytes, which
+  # ble.sh's `keyseq:` specification understands.
+  local out= i c code
+  for ((i=0; i<${#raw}; i++)); do
+    c=${raw:i:1}
+    case $c in
+      ($'\e') out+='\e' ;;
+      ($'\t') out+='\t' ;;
+      ($'\n') out+='\n' ;;
+      ($'\r') out+='\r' ;;
+      (*)
+        printf -v code '%d' "'$c"
+        if ((code < 32 || code == 127)); then
+          out+=$(printf '\\x%02x' "$code")
+        else
+          out+=$c
+        fi
+        ;;
+    esac
+  done
+  printf 'keyseq:%s' "$out"
+}
+
+# Register Adaptive ahead of ble.sh's own history matcher: the engine knows
+# about command structure and learned habits, and the raw-history fallback is
+# still there as a second opinion.
+#
+# `_ble_complete_auto_source` is a plain *indexed* array in ble.sh -- that is
+# how ble.sh's own completion core declares it, and how the helpers that
+# insert into it expect it. Turning it into an associative array makes ble.sh
+# iterate the sources in hash order and breaks those helpers, so the type is
+# checked here and repaired if an older version of this adapter left it
+# converted.
+_adaptive_blesh_register_source() {
+  local decl
+  decl=$(declare -p _ble_complete_auto_source 2>/dev/null) || return 0
+  [[ $decl == 'declare -A '* ]] && unset -v _ble_complete_auto_source
+  _ble_complete_auto_source=(adaptive history syntax)
+}
+
+_adaptive_blesh_bind() {
+  # The auto-complete keymap lives in ble.sh's completion core. Importing it
+  # here is a no-op when ble.sh has already imported it (which it has, by the
+  # time the idle queue runs) and makes the keymap known in the rare case
+  # where it has not.
+  ble-import lib/core-complete >/dev/null 2>&1 || true
+
+  # The arrows are rebound inside the auto-complete keymap -- the keymap in
+  # force exactly while a suggestion is on screen -- so with no suggestion
+  # showing, Right and Left keep their normal meaning of cursor movement.
+  local browse
+  browse=$(_adaptive_blesh_keyspec)
+  # `-f` names a ble.sh widget: ble-bind prefixes `ble/widget/` itself, so
+  # the widget is given by its bare name. (Without a command-type flag
+  # ble-bind rejects the arguments outright, and says so.)
+  ble-bind -m auto_complete -f 'right' 'adaptive-cycle-next' || true
+  ble-bind -m auto_complete -f 'C-f'   'adaptive-cycle-next' || true
+  ble-bind -m auto_complete -f 'left'  'adaptive-cycle-prev'  || true
+  ble-bind -m auto_complete -f 'C-b'   'adaptive-cycle-prev'  || true
+  # Shift-Tab walks the candidate list backwards.
+  ble-bind -m auto_complete -f "$browse" 'adaptive-menu-complete-backward' || true
+  ble-bind -m emacs -f "$browse" 'adaptive-menu-complete-backward' || true
+
+  _adaptive_blesh_register_source
+}
+
+if ble/is-function ble/util/idle.push >/dev/null 2>&1; then
+  ble/util/idle.push _adaptive_blesh_bind
+else
+  # No idle queue (very old ble.sh): apply directly and hope for the best.
+  _adaptive_blesh_bind
+fi
 
 # ---------------------------------------------------------------------------
 # Tab and Shift-Tab

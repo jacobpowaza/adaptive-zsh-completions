@@ -220,21 +220,57 @@ init_path() {
     sed -n "s/^source '\(.*\)'$/\1/p"
 }
 
+# Write the managed block into an rc file.
+#
+# When the block is already there it is *replaced in place*, not skipped: an
+# upgrade has to upgrade, and a block written by an older release would
+# otherwise survive every reinstall. Everything outside the markers -- the
+# user's own settings, aliases and PROMPT_COMMAND -- is left exactly as it
+# was, and the previous file is kept as a timestamped backup.
+#
+# The file is rewritten through a temporary file but copied back with `cat`,
+# so its permissions and ownership survive.
+replace_block() {
+  file=$1
+  block=$2
+  touch "$file"
+  backup="$file.adaptive-backup.$(date +%Y%m%d%H%M%S).$$"
+  cp "$file" "$backup"
+  temporary=$(mktemp "${TMPDIR:-/tmp}/adaptive-rc.XXXXXX")
+  if grep -q '^# >>> adaptive initialize >>>$' "$file"; then
+    awk -v blockfile="$block" '
+      BEGIN { while ((getline line < blockfile) > 0) lines[++n] = line }
+      /^# >>> adaptive initialize >>>$/ {
+        managed = 1
+        for (i = 1; i <= n; i++) print lines[i]
+        next
+      }
+      /^# <<< adaptive initialize <<<$/ { managed = 0; next }
+      !managed { print }
+    ' "$file" > "$temporary"
+  else
+    cat "$file" > "$temporary"
+    printf '\n' >> "$temporary"
+    cat "$block" >> "$temporary"
+  fi
+  cat "$temporary" > "$file"
+  rm -f "$temporary"
+  say "Updated $file (backup: $backup)"
+}
+
 install_zsh_block() {
   touch "$ZSHRC"
-  if grep -q '^# >>> adaptive initialize >>>$' "$ZSHRC"; then
-    say "Zsh integration already present in $ZSHRC"
-    return 0
-  fi
-  backup="$ZSHRC.adaptive-backup.$(date +%Y%m%d%H%M%S).$$"
-  cp "$ZSHRC" "$backup"
   # Pre-generate the cached integration so the very next shell sources a
   # file instead of launching the binary, and learn where the data dir
   # landed (platform-dependent) from the printed source line.
   init_file=$(init_path zsh)
+  block=$(mktemp "${TMPDIR:-/tmp}/adaptive-block.XXXXXX")
   {
-    printf '\n# >>> adaptive initialize >>>\n'
-    printf 'export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+    printf '# >>> adaptive initialize >>>\n'
+    printf 'case ":$PATH:" in\n'
+    printf '  *":%s:"*) ;;\n' "$INSTALL_DIR"
+    printf '  *) export PATH="%s:$PATH" ;;\n' "$INSTALL_DIR"
+    printf 'esac\n'
     printf "export ADAPTIVE_ACCEPT_KEY='%s'\n" "$accept_key_escaped"
     printf "export ADAPTIVE_MENU_NEXT_KEY='%s'\n" "$menu_next_key_escaped"
     printf "export ADAPTIVE_BROWSE_KEY='%s'\n" "$browse_key_escaped"
@@ -250,18 +286,13 @@ install_zsh_block() {
       printf 'eval "$(adaptive init zsh)"\n'
     fi
     printf '# <<< adaptive initialize <<<\n'
-  } >> "$ZSHRC"
-  say "Updated $ZSHRC (backup: $backup)"
+  } > "$block"
+  replace_block "$ZSHRC" "$block"
+  rm -f "$block"
 }
 
 install_bash_block() {
   touch "$BASHRC"
-  if grep -q '^# >>> adaptive initialize >>>$' "$BASHRC"; then
-    say "Bash integration already present in $BASHRC"
-    return 0
-  fi
-  backup="$BASHRC.adaptive-backup.$(date +%Y%m%d%H%M%S).$$"
-  cp "$BASHRC" "$backup"
   # Pre-generate both Bash frontends so the very next shell sources a file
   # instead of launching the binary.
   bash_init_file=$(init_path bash)
@@ -275,54 +306,53 @@ install_bash_block() {
   if [ -n "$blesh_init_file" ]; then
     blesh_init_quoted=$(printf "'%s'" "$(printf '%s' "$blesh_init_file" | sed "s/'/'\\\\''/g")")
   fi
+  block=$(mktemp "${TMPDIR:-/tmp}/adaptive-block.XXXXXX")
   {
-    printf '\n# >>> adaptive initialize >>>\n'
-    printf 'if [[ $- == *i* ]] && command -v adaptive >/dev/null 2>&1; then\n'
-    printf '  export PATH="%s:$PATH"\n' "$INSTALL_DIR"
-    printf "  export ADAPTIVE_BROWSE_KEY=%s\n" "$browse_literal"
+    printf '# >>> adaptive initialize >>>\n'
+    printf '# Only interactive shells: the frontends bind keys and readline\n'
+    printf '# state, neither of which means anything to a script.\n'
+    printf 'if [[ $- == *i* ]]; then\n'
+    printf '  case ":$PATH:" in\n'
+    printf '    *":%s:"*) ;;\n' "$INSTALL_DIR"
+    printf '    *) export PATH="%s:$PATH" ;;\n' "$INSTALL_DIR"
+    printf '  esac\n'
+    printf '  if command -v adaptive >/dev/null 2>&1; then\n'
+    printf "    export ADAPTIVE_BROWSE_KEY=%s\n" "$browse_literal"
     if [ -n "$BASH_ACCEPT_KEY" ]; then
-      printf "  export ADAPTIVE_GHOST_ACCEPT_KEY=%s\n" \
+      printf "    export ADAPTIVE_GHOST_ACCEPT_KEY=%s\n" \
         "$(bash_dollar_quote "$(bash_key_bytes "$BASH_ACCEPT_KEY")")"
     fi
-    printf '  # ble.sh replaces Readline with a line editor that renders styled\n'
-    printf '  # regions, so the inline suggestion can be dimmed. Load it when it is\n'
-    printf '  # installed; otherwise the Readline frontend below takes over.\n'
-    printf '  if [[ -r ${XDG_DATA_HOME:-$HOME/.local/share}/blesh/ble.sh ]]; then\n'
-    printf '    [[ -n ${_ble_version:-} ]] || source ${XDG_DATA_HOME:-$HOME/.local/share}/blesh/ble.sh\n'
-    printf '  elif [[ -r $HOME/.blesh/ble.sh ]]; then\n'
-    printf '    [[ -n ${_ble_version:-} ]] || source $HOME/.blesh/ble.sh\n'
-    printf '  fi\n'
-    printf '  if declare -F ble/util/idle.push >/dev/null 2>&1 || [[ -n ${_ble_version:-} ]]; then\n'
-    if [ -n "$blesh_init_quoted" ]; then
-      printf '    if [[ -r %s ]]; then\n' "$blesh_init_quoted"
-      printf '      source %s\n' "$blesh_init_quoted"
-      printf '    else\n'
-      printf '      eval "$(adaptive init blesh)"\n'
-      printf '    fi\n'
-    else
-      printf '    eval "$(adaptive init blesh)"\n'
-    fi
-    printf '    # ble.sh wants an indexed array here; Adaptive declares it as a\n'
-    printf '    # dictionary when the file is re-sourced, so repair it on every load.\n'
-    printf '    _adaptive_completion_sources() {\n'
-    printf '      unset -v _ble_complete_auto_source\n'
-    printf '      declare -ga _ble_complete_auto_source=(adaptive history syntax)\n'
-    printf '    }\n'
-    printf '    _adaptive_completion_sources\n'
-    printf '    if declare -F ble/util/idle.push >/dev/null 2>&1; then\n'
-    printf '      ble/util/idle.push _adaptive_completion_sources\n'
+    printf '    # ble.sh replaces Readline with a line editor that renders styled\n'
+    printf '    # regions, so the inline suggestion can be dimmed. Load it when it is\n'
+    printf '    # installed; otherwise the Readline frontend below takes over.\n'
+    printf '    if [[ -r ${XDG_DATA_HOME:-$HOME/.local/share}/blesh/ble.sh ]]; then\n'
+    printf '      [[ -n ${_ble_version:-} ]] || source ${XDG_DATA_HOME:-$HOME/.local/share}/blesh/ble.sh\n'
+    printf '    elif [[ -r $HOME/.blesh/ble.sh ]]; then\n'
+    printf '      [[ -n ${_ble_version:-} ]] || source $HOME/.blesh/ble.sh\n'
     printf '    fi\n'
-    printf '  elif [[ -r %s ]]; then\n' "${bash_init_quoted:-/dev/null}"
-    if [ -n "$bash_init_quoted" ]; then
-      printf '    source %s\n' "$bash_init_quoted"
+    printf '    if [[ -n ${_ble_version:-} ]] || declare -F ble/util/idle.push >/dev/null 2>&1; then\n'
+    if [ -n "$blesh_init_quoted" ]; then
+      printf '      if [[ -r %s ]]; then\n' "$blesh_init_quoted"
+      printf '        source %s\n' "$blesh_init_quoted"
+      printf '      else\n'
+      printf '        eval "$(adaptive init blesh)"\n'
+      printf '      fi\n'
+    else
+      printf '      eval "$(adaptive init blesh)"\n'
     fi
-    printf '  else\n'
-    printf '    eval "$(adaptive init bash)"\n'
+    printf '    elif [[ -r %s ]]; then\n' "${bash_init_quoted:-/dev/null}"
+    if [ -n "$bash_init_quoted" ]; then
+      printf '      source %s\n' "$bash_init_quoted"
+    fi
+    printf '    else\n'
+    printf '      eval "$(adaptive init bash)"\n'
+    printf '    fi\n'
     printf '  fi\n'
     printf 'fi\n'
     printf '# <<< adaptive initialize <<<\n'
-  } >> "$BASHRC"
-  say "Updated $BASHRC (backup: $backup)"
+  } > "$block"
+  replace_block "$BASHRC" "$block"
+  rm -f "$block"
 }
 
 for target in $(target_shells); do

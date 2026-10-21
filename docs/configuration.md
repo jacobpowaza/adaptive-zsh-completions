@@ -94,6 +94,16 @@ export ADAPTIVE_BROWSE_KEY=$'\e[Z'
 
 The installer writes these from `ADAPTIVE_BASH_ACCEPT_KEY` and `ADAPTIVE_BASH_BROWSE_KEY`, which use the same caret notation as the Zsh settings (`^[[C`, `^[Z`, `^I`); the installer converts them to the literal escape sequences Bash needs. The Readline frontend also honours `ADAPTIVE_GHOST_TEXT=0` (no inline suggestion) and `ADAPTIVE_GHOST_REJECT_KEY` (the key that discards the suggestion and pauses suggestions for the session, default `Ctrl-X`).
 
+The ble.sh frontend takes the browse key in ble.sh's own key specification
+instead, because that is what ble.sh's key decoder matches on. The default
+(Shift-Tab) is expressed as `S-TAB`; a custom key is given as the exact
+character sequence the terminal sends.
+
+```bash
+# A ble.sh key specification. Defaults to S-TAB.
+export ADAPTIVE_BLE_BROWSE_KEY='S-TAB'
+```
+
 ## Usage priors
 
 Ranking blends what people generally run with what you run. The global half lives in a table shipped with the binary and can be extended or reordered in `~/.config/adaptive/priors.toml` (`ADAPTIVE_PRIORS` overrides the path):

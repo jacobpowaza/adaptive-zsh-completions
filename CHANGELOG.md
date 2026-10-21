@@ -2,6 +2,21 @@
 
 All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and semantic versioning.
 
+## [0.5.1] - 2026-10-20
+
+### Fixed
+
+- The ble.sh frontend no longer breaks the prompt. v0.5.0 made its key bindings through ble.sh's low-level `ble-decode-key/bind`, which expects key *codes* and builds the keymap array subscript with `builtin eval`. A key *name* such as `right` or `\e[Z` is therefore evaluated as an arithmetic expression, and when it is not a number Bash raises a syntax error inside the eval. In an interactive shell a syntax error aborts the whole enclosing command -- here, ble.sh's own prompt-rendering chain -- so the prompt was never restored, `PS1` kept ble.sh's internal placeholder, and **every new terminal greeted the user with `[ble: press RET to continue]`**. The bindings now go through `ble-bind`, ble.sh's documented command, which translates key names into key codes, and the browse key is passed as a key specification ble.sh understands (`S-TAB`, or the exact character sequence for a custom key).
+- The ble.sh frontend no longer corrupts ble.sh's own keymap. The same low-level call wrote its entries into a bogus array (`_ble_decode_emacs_kmap_e[Z]`) instead of the emacs keymap, so the arrow keys were never actually bound and the auto-complete keymap picked up a stray entry at index 0. The suggestion is now drawn in the dim face, and Right/Left/Ctrl-F/Ctrl-B really do cycle the candidates.
+- The ble.sh frontend no longer turns ble.sh's completion source list into an associative array. `_ble_complete_auto_source` is a plain indexed array in ble.sh; the previous version re-declared it as a dictionary, which made ble.sh iterate the sources in hash order and broke the helpers that insert into it. The type is now checked and repaired instead, and the registration happens after ble.sh's completion core has been imported.
+- The installer replaces Adaptive's managed block in `.bashrc`/`.zshrc` instead of skipping it when one is already there, so an upgrade actually upgrades: a block written by an older release no longer survives every reinstall. Everything outside the markers -- the user's own settings, aliases and `PROMPT_COMMAND` -- is preserved, and the previous file is kept as a timestamped backup.
+- The installer puts the install directory on `PATH` before looking for the `adaptive` binary, so the Bash integration also works in a login shell whose `PATH` does not yet contain it. The directory is added exactly once.
+
+### Added
+
+- A pseudo-terminal test suite for the Bash frontends (`tests/blesh_pty.py`): ten consecutive fresh interactive shells with no placeholder prompt, the inline suggestion drawn in the dim face, the arrow keys cycling the candidates, the key bindings actually present in ble.sh's auto-complete keymap, the history hook registered exactly once, and the Readline backend working when ble.sh is absent. The suite is what the regression above was reproduced and verified with.
+- The installer test is now hermetic (it writes only inside its own temporary directory) and covers the full lifecycle: fresh install, repeat install, upgrade over a stale block, a machine with no rc files at all, uninstall, and reinstall.
+
 ## [0.5.0] - 2026-10-20
 
 ### Added

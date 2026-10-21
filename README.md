@@ -138,6 +138,12 @@ because Readline prints ANSI escapes literally. Right or End accepts the whole
 suggestion, Ctrl-Right accepts one word of it, Ctrl-X discards it, Tab
 completes normally, and Shift-Tab walks the candidate list backwards.
 
+The ble.sh frontend is optional: when ble.sh is not installed, the installer
+wires up the Readline frontend instead, and the same keys and features are
+available. Both are driven through a pseudo-terminal in CI
+(`tests/blesh_pty.py`), because a line editor can only be judged inside a
+real terminal.
+
 The installer detects ble.sh and uses it when it is installed; otherwise the
 Readline frontend takes over. Both need bash >= 4.
 
