@@ -15,7 +15,12 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install shell test dependencies
-        run: sudo apt-get update && sudo apt-get install -y zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh gawk make
+      - name: Install ble.sh
+        run: |
+          git clone --depth 1 https://github.com/akinomyoga/ble.sh /tmp/ble.sh
+          make -C /tmp/ble.sh -f GNUmakefile install PREFIX="$HOME/.local"
+          test -r "$HOME/.local/share/blesh/ble.sh"
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all --locked
@@ -26,6 +31,11 @@ jobs:
       - run: sh -n install.sh && sh -n uninstall.sh
       - run: ./tests/install.sh
       - run: bash tests/frontend.bash
+      # The Bash frontends only mean anything inside a real terminal, so they
+      # are driven through a pseudo-terminal: ten fresh shells, the inline
+      # suggestion, the arrow keys, and both the ble.sh and the Readline
+      # backends.
+      - run: python3 tests/blesh_pty.py
   secrets:
     runs-on: ubuntu-latest
     steps:

@@ -27,6 +27,21 @@ fn isolated() -> TempDir {
     temp
 }
 
+/// The adaptive binary, run with a hermetic environment.
+///
+/// The daemon socket is pinned to this test's own data directory, and the
+/// auto-spawn is switched off. The shell integration exports both
+/// `ADAPTIVE_SOCK` and `ADAPTIVE_AUTO_DAEMON`, so without this a test would
+/// be answered by whatever daemon the developer happens to be running -- with
+/// the developer's own profile, not the isolated one -- and would leave a
+/// stray server behind.
+fn adaptive_cmd(temp: &TempDir) -> assert_cmd::Command {
+    let mut cmd = cargo_bin_cmd!("adaptive");
+    cmd.env("ADAPTIVE_SOCK", sock_path(temp))
+        .env_remove("ADAPTIVE_AUTO_DAEMON");
+    cmd
+}
+
 /// A fake `carapace` binary. `--list --names` answers from `list_names`;
 /// `<completer> export ...` prints `export_json` and counts invocations in
 /// `counter` so tests can prove when the subprocess ran.
@@ -56,7 +71,7 @@ fn enable_carapace_config(temp: &TempDir) {
 }
 
 fn query(temp: &TempDir, buffer: &str, cwd: &std::path::Path) -> Value {
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(temp)
         .args(["query", "--buffer", buffer, "--cwd", cwd.to_str().unwrap()])
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
         .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
@@ -84,7 +99,7 @@ fn generic_help_and_lazy_subcommand_discovery() {
     .unwrap();
     fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(&temp)
         .args(["query", "--buffer", "test-tool serve deploy --dang"])
         .env("PATH", path)
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
@@ -159,7 +174,7 @@ fn filesystem_and_history_fallback_work_through_protocol() {
     let spaced = query(&temp, "cd spa", temp.path());
     assert_eq!(spaced["candidates"][0]["value"], "space\\ dir/");
 
-    let status = cargo_bin_cmd!("adaptive")
+    let status = adaptive_cmd(&temp)
         .args(["history", "record", "--", "mysterycmd", "alpha", "beta"])
         .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
         .output()
@@ -178,7 +193,7 @@ fn blank_cd_lists_the_current_directory() {
     fs::create_dir(temp.path().join("Downloads")).unwrap();
 
     for _ in 0..3 {
-        let output = cargo_bin_cmd!("adaptive")
+        let output = adaptive_cmd(&temp)
             .args(["history", "record", "--", "cd", "Development"])
             .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
             .output()
@@ -213,7 +228,7 @@ fn list_query_keeps_sibling_commands_for_an_exact_token() {
     fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let run = |list: bool| {
-        let mut command = cargo_bin_cmd!("adaptive");
+        let mut command = adaptive_cmd(&temp);
         command.args(["query", "--buffer", "list-tool clone"]);
         if list {
             command.arg("--list");
@@ -260,7 +275,7 @@ fn git_list_includes_commands_outside_the_short_help_page() {
 }
 
 fn list_query_for_git(temp: &TempDir, buffer: &str) -> Value {
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(temp)
         .args(["query", "--list", "--buffer", buffer])
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
         .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
@@ -288,7 +303,7 @@ fn executable_change_invalidates_cached_schema() {
     write_tool("--first");
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let run = |buffer: &str| {
-        let output = cargo_bin_cmd!("adaptive")
+        let output = adaptive_cmd(&temp)
             .args(["query", "--buffer", buffer])
             .env("PATH", &path)
             .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
@@ -331,7 +346,7 @@ fn github_provider_uses_mock_http_then_works_offline_from_cache() {
             .unwrap();
     });
     let run = |offline: bool| {
-        let mut command = cargo_bin_cmd!("adaptive");
+        let mut command = adaptive_cmd(&temp);
         command.args([
             "query",
             "--buffer",
@@ -388,7 +403,7 @@ fn gitlab_forge_provider_uses_the_shared_protocol() {
             )
             .unwrap();
     });
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(&temp)
         .args([
             "query",
             "--buffer",
@@ -654,7 +669,7 @@ fn sock_send_is_fork_free_and_escapes_hostile_buffers() {
         ),
         ("HISTFILE", temp.path().join("nohist").display().to_string()),
     ];
-    let mut cmd = cargo_bin_cmd!("adaptive");
+    let mut cmd = adaptive_cmd(&temp);
     for (k, v) in &envs {
         cmd.env(k, v);
     }
@@ -662,7 +677,7 @@ fn sock_send_is_fork_free_and_escapes_hostile_buffers() {
         .output()
         .unwrap();
 
-    let mut daemon = cargo_bin_cmd!("adaptive");
+    let mut daemon = adaptive_cmd(&temp);
     for (k, v) in &envs {
         daemon.env(k, v);
     }
@@ -695,7 +710,7 @@ head=("${{(ps:\t:)header}}")
         zsh.env(k, v);
     }
     let output = zsh.output().unwrap();
-    let _ = cargo_bin_cmd!("adaptive")
+    let _ = adaptive_cmd(&temp)
         .envs(envs.iter().map(|(k, v)| (*k, v.as_str())))
         .args(["daemon", "stop"])
         .output();
@@ -769,14 +784,14 @@ fn repeated_history_ranks_the_next_argument_first() {
     fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     for _ in 0..3 {
-        let output = cargo_bin_cmd!("adaptive")
+        let output = adaptive_cmd(&temp)
             .args(["history", "record", "--", "choice-tool", "pick", "apricot"])
             .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
             .output()
             .unwrap();
         assert!(output.status.success());
     }
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(&temp)
         .args(["query", "--buffer", "choice-tool pick a"])
         .env("PATH", path)
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
@@ -812,7 +827,7 @@ fn global_priors_predict_the_next_token_and_outrank_flags() {
     .unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let run = |args: &[&str]| -> Value {
-        let output = cargo_bin_cmd!("adaptive")
+        let output = adaptive_cmd(&temp)
             .args(args)
             .env("PATH", &path)
             .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
@@ -858,7 +873,7 @@ fn priors_supply_candidates_when_discovery_finds_nothing() {
     let priors = temp.path().join("priors.toml");
     fs::write(&priors, "[subcommands]\nmystery = [\"ship\", \"revert\"]\n").unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(&temp)
         .args(["query", "--list", "--buffer", "mystery "])
         .env("PATH", &path)
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
@@ -893,14 +908,14 @@ fn habitual_next_argument_collapses_to_a_single_ghost_candidate() {
     fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     for _ in 0..4 {
-        let output = cargo_bin_cmd!("adaptive")
+        let output = adaptive_cmd(&temp)
             .args(["history", "record", "--", "choice-tool", "pick", "apricot"])
             .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
             .output()
             .unwrap();
         assert!(output.status.success());
     }
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(&temp)
         .args(["query", "--buffer", "choice-tool pick "])
         .env("PATH", &path)
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
@@ -921,7 +936,7 @@ fn habitual_next_argument_collapses_to_a_single_ghost_candidate() {
     // Without an established habit, both choices should still show up (this
     // is the --list / TAB-selector case, and confirms the collapse above is
     // driven by usage, not just "one command has a default").
-    let list_output = cargo_bin_cmd!("adaptive")
+    let list_output = adaptive_cmd(&temp)
         .args(["query", "--list", "--buffer", "choice-tool pick "])
         .env("PATH", &path)
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
@@ -939,7 +954,7 @@ fn zsh_protocol_labels_candidate_sources() {
     let temp = isolated();
     fs::create_dir(temp.path().join("alpha")).unwrap();
     fs::create_dir(temp.path().join("alpine")).unwrap();
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(&temp)
         .args([
             "query",
             "--format",
@@ -1002,7 +1017,7 @@ fn record_in(temp: &TempDir, cwd: Option<&str>, prev: Option<&str>, line: &[&str
     }
     args.push("--".to_owned());
     args.extend(line.iter().map(|s| s.to_string()));
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(temp)
         .args(&args)
         .env("ADAPTIVE_DATA_DIR", temp.path().join("data"))
         .output()
@@ -1026,7 +1041,7 @@ fn unparsable_tool(temp: &TempDir, name: &str) -> String {
 }
 
 fn query_with(temp: &TempDir, buffer: &str, cwd: &std::path::Path, extra: &[&str]) -> Value {
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(temp)
         .args(["query", "--buffer", buffer, "--cwd", cwd.to_str().unwrap()])
         .args(extra)
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
@@ -1143,7 +1158,7 @@ fn accept_and_reject_feedback_reorder_rankings() {
     record_in(&temp, None, None, &["choice-tool", "pick", "apple"]);
     record_in(&temp, None, None, &["choice-tool", "pick", "apricot"]);
     let feedback = |kind: &str, value: &str| {
-        let output = cargo_bin_cmd!("adaptive")
+        let output = adaptive_cmd(&temp)
             .args([
                 "history",
                 "feedback",
@@ -1250,7 +1265,7 @@ fn history_import_builds_predictions_from_shell_history() {
     .unwrap();
     let data_dir = temp.path().join("data");
     let import = |extra: &[&str]| {
-        let mut command = cargo_bin_cmd!("adaptive");
+        let mut command = adaptive_cmd(&temp);
         command
             .args(["history", "import"])
             .arg(histfile.to_str().unwrap())
@@ -1273,7 +1288,7 @@ fn history_import_builds_predictions_from_shell_history() {
     assert!(second.starts_with("Already imported"), "{second}");
 
     let path = unparsable_tool(&temp, "claude");
-    let response = cargo_bin_cmd!("adaptive")
+    let response = adaptive_cmd(&temp)
         .args([
             "query",
             "--buffer",
@@ -1446,7 +1461,7 @@ fn carapace_answers_merge_and_learning_overrides_them() {
     // Explicit listing so the habitual ghost-collapse cannot hide the merge,
     // with the shim dir first on PATH so carapace is actually detected.
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(&temp)
         .args(["query", "--list", "--buffer", "git checkout "])
         .env("PATH", &path)
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
@@ -1487,7 +1502,7 @@ fn carapace_schema_replaces_help_parsing() {
     .unwrap();
     fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(&temp)
         .args(["query", "--list", "--buffer", "deployctl get "])
         .env("PATH", path)
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
@@ -1516,7 +1531,7 @@ fn carapace_missing_leaves_completion_unchanged() {
         record_in(&temp, None, None, &["mysterytool", "alpha"]);
     }
     // The controlled PATH contains only our own tool: no carapace anywhere.
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(&temp)
         .args(["query", "--buffer", "mysterytool al"])
         .env("PATH", bin.display().to_string())
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
@@ -1660,7 +1675,7 @@ fn carapace_answers_are_cached() {
         .unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     for _ in 0..2 {
-        let output = cargo_bin_cmd!("adaptive")
+        let output = adaptive_cmd(&temp)
             .args(["query", "--buffer", "git checkout "])
             .env("PATH", &path)
             .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
@@ -1694,7 +1709,7 @@ fn carapace_cli_toggle_controls_the_source() {
     fs::write(&tool, "#!/bin/sh\nexit 1\n").unwrap();
     fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
     let run_cli = |args: &[&str]| {
-        let output = cargo_bin_cmd!("adaptive")
+        let output = adaptive_cmd(&temp)
             .args(args)
             .env("PATH", bin.display().to_string())
             .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
@@ -1855,7 +1870,7 @@ fn sock_path(temp: &TempDir) -> std::path::PathBuf {
 }
 
 fn run_cli(temp: &TempDir, args: &[&str], extra_env: &[(&str, &str)]) -> (bool, String, String) {
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(temp)
         .args(args)
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
         .env("ADAPTIVE_DATA_DIR", data_dir(temp))
@@ -1880,6 +1895,8 @@ fn start_daemon(temp: &TempDir) {
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
         .env("ADAPTIVE_DATA_DIR", data_dir(temp))
         .env("ADAPTIVE_CONFIG", temp.path().join("config.toml"))
+        .env("ADAPTIVE_SOCK", sock_path(temp))
+        .env_remove("ADAPTIVE_AUTO_DAEMON")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -1912,7 +1929,7 @@ fn stop_daemon(temp: &TempDir) {
 }
 
 fn query_raw(temp: &TempDir, args: &[&str], extra_env: &[(&str, &str)]) -> Result<Value, String> {
-    let output = cargo_bin_cmd!("adaptive")
+    let output = adaptive_cmd(temp)
         .args(args)
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
         .env("ADAPTIVE_DATA_DIR", data_dir(temp))
@@ -1958,7 +1975,7 @@ fn daemon_serves_queries_and_the_direct_path_picks_up_where_it_leaves_off() {
 
     // ...and the zsh-format payload is byte-identical to the direct path's
     // print_zsh layout (no daemon framing leaks through the CLI).
-    let tsv_daemon = cargo_bin_cmd!("adaptive")
+    let tsv_daemon = adaptive_cmd(&temp)
         .args(["query", "--format", "zsh", "--buffer", "git p"])
         .env("ADAPTIVE_CACHE_DIR", temp.path().join("cache"))
         .env("ADAPTIVE_DATA_DIR", data_dir(&temp))
@@ -1974,7 +1991,7 @@ fn daemon_serves_queries_and_the_direct_path_picks_up_where_it_leaves_off() {
 
     // ...and it is exactly what the same query prints without a daemon
     // (request ids are wall-clock micros, so compare everything but them).
-    let tsv_direct = cargo_bin_cmd!("adaptive")
+    let tsv_direct = adaptive_cmd(&temp)
         .args([
             "query",
             "--format",
