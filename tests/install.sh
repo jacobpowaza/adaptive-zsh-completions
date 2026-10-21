@@ -74,6 +74,32 @@ bash -n "$TEST_ROOT/home/.bashrc"
 # The install directory ends up on the PATH exactly once.
 test "$(grep -cF '":'"$TEST_ROOT/bin"':"' "$TEST_ROOT/home/.bashrc")" -eq 1
 
+# --- a managed block with no end marker ------------------------------------
+# A hand-edited rc file can end up with the start marker but no end marker.
+# Adaptive cannot tell where its own block stops in that case, so it must
+# leave the file alone rather than delete everything after the marker.
+printf 'export EXISTING_BASH_SETTING=kept\n# >>> adaptive initialize >>>\nif true; then\n  echo stale\nfi\n# ArtCraft apps\nexport CRAFT_ROOT="$HOME/craft"\n' > "$TEST_ROOT/home/.bashrc"
+cp "$TEST_ROOT/home/.bashrc" "$TEST_ROOT/bashrc.unterminated"
+run_installer ADAPTIVE_SHELL=bash
+cmp -s "$TEST_ROOT/bashrc.unterminated" "$TEST_ROOT/home/.bashrc"
+grep -q 'EXISTING_BASH_SETTING=kept' "$TEST_ROOT/home/.bashrc"
+grep -q 'CRAFT_ROOT' "$TEST_ROOT/home/.bashrc"
+
+# The uninstaller must not truncate such a file either.
+ADAPTIVE_INSTALL_DIR="$TEST_ROOT/bin" ADAPTIVE_BASHRC="$TEST_ROOT/home/.bashrc" "$ROOT/uninstall.sh"
+cmp -s "$TEST_ROOT/bashrc.unterminated" "$TEST_ROOT/home/.bashrc"
+grep -q 'CRAFT_ROOT' "$TEST_ROOT/home/.bashrc"
+
+# With the end marker restored the block is replaced, and everything outside
+# it survives.
+printf 'export EXISTING_BASH_SETTING=kept\n# >>> adaptive initialize >>>\nif true; then\n  echo stale\nfi\n# <<< adaptive initialize <<<\n# ArtCraft apps\nexport CRAFT_ROOT="$HOME/craft"\n' > "$TEST_ROOT/home/.bashrc"
+run_installer ADAPTIVE_SHELL=bash
+test "$(grep -c '^# >>> adaptive initialize >>>$' "$TEST_ROOT/home/.bashrc")" -eq 1
+grep -q 'EXISTING_BASH_SETTING=kept' "$TEST_ROOT/home/.bashrc"
+grep -q 'CRAFT_ROOT' "$TEST_ROOT/home/.bashrc"
+! grep -q 'echo stale' "$TEST_ROOT/home/.bashrc"
+bash -n "$TEST_ROOT/home/.bashrc"
+
 # --- both shells at once --------------------------------------------------
 run_installer ADAPTIVE_SHELL=both
 test "$(grep -c '^# >>> adaptive initialize >>>$' "$TEST_ROOT/home/.zshrc")" -eq 1

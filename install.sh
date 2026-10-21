@@ -228,6 +228,12 @@ init_path() {
 # user's own settings, aliases and PROMPT_COMMAND -- is left exactly as it
 # was, and the previous file is kept as a timestamped backup.
 #
+# A file whose managed block has a start marker but no end marker is *not*
+# touched: without the end marker there is no way to tell where Adaptive's
+# block stops and the user's own configuration begins, and guessing would
+# delete the user's settings. Such a file is reported instead, with the
+# line range to repair.
+#
 # The file is rewritten through a temporary file but copied back with `cat`,
 # so its permissions and ownership survive.
 replace_block() {
@@ -236,8 +242,17 @@ replace_block() {
   touch "$file"
   backup="$file.adaptive-backup.$(date +%Y%m%d%H%M%S).$$"
   cp "$file" "$backup"
-  temporary=$(mktemp "${TMPDIR:-/tmp}/adaptive-rc.XXXXXX")
   if grep -q '^# >>> adaptive initialize >>>$' "$file"; then
+    if ! grep -q '^# <<< adaptive initialize <<<$' "$file"; then
+      say "Left $file untouched: the Adaptive block has a start marker but no end marker."
+      say "  The block runs from line $(grep -n '^# >>> adaptive initialize >>>$' "$file" | cut -d: -f1) to the end of the file,"
+      say "  so Adaptive cannot tell where its own block stops. Add the closing"
+      say "  marker '# <<< adaptive initialize <<<' after the last line of the old"
+      say "  block and run the installer again. Backup: $backup"
+      rm -f "$backup"
+      return 0
+    fi
+    temporary=$(mktemp "${TMPDIR:-/tmp}/adaptive-rc.XXXXXX")
     awk -v blockfile="$block" '
       BEGIN { while ((getline line < blockfile) > 0) lines[++n] = line }
       /^# >>> adaptive initialize >>>$/ {
@@ -248,13 +263,16 @@ replace_block() {
       /^# <<< adaptive initialize <<<$/ { managed = 0; next }
       !managed { print }
     ' "$file" > "$temporary"
+    cat "$temporary" > "$file"
+    rm -f "$temporary"
   else
+    temporary=$(mktemp "${TMPDIR:-/tmp}/adaptive-rc.XXXXXX")
     cat "$file" > "$temporary"
     printf '\n' >> "$temporary"
     cat "$block" >> "$temporary"
+    cat "$temporary" > "$file"
+    rm -f "$temporary"
   fi
-  cat "$temporary" > "$file"
-  rm -f "$temporary"
   say "Updated $file (backup: $backup)"
 }
 
